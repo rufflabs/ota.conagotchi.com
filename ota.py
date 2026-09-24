@@ -32,7 +32,16 @@ import asyncio
 VERSION_FILE = "data/ota_version.txt"
 STAGE_DIR = "data/ota_stage"
 PENDING_FILE = "data/ota_pending"
-CHUNK = 1024
+CHUNK = 1024          # local file hashing
+NET_CHUNK = 4096      # socket reads; measurably faster than 1 KiB on-device
+
+# Files at or under this size are collected in RAM, verified, then written in
+# one pass. Interleaving small socket reads with small filesystem writes
+# serialises the network against the flash so neither overlaps; buffering lets
+# the download run at full speed and makes the write one sequential operation.
+# Anything larger falls back to streaming so memory stays bounded regardless of
+# what a manifest asks for.
+BUFFER_MAX = 262144   # 256 KiB
 
 _S_IFDIR = 0x4000
 
@@ -277,6 +286,46 @@ class OTAUpdater:
         return parse_manifest(self.transport.get_text(self.manifest_url))
 
     async def _download(self, path, sha, size, base_done, total, progress):
+        """Fetch one file into staging, hash-verified. Buffers the body in RAM
+        when the file is small enough, otherwise streams it to disk."""
+        if size <= BUFFER_MAX:
+            return await self._download_buffered(
+                path, sha, base_done, total, progress)
+        return await self._download_streamed(
+            path, sha, base_done, total, progress)
+
+    async def _download_buffered(self, path, sha, base_done, total, progress):
+        """Collect the body in RAM, verify it, then write it in one pass.
+
+        A file that fails its checksum never reaches the filesystem at all."""
+        h = hashlib.sha256()
+        body = bytearray()
+        stream = self.transport.open(self.base_url + path)
+        try:
+            while True:
+                chunk = stream.read(NET_CHUNK)
+                if not chunk:
+                    break
+                body.extend(chunk)
+                h.update(chunk)
+                if progress:
+                    progress(base_done + len(body), total)
+                await asyncio.sleep(0)  # keep the UI/event loop responsive
+        finally:
+            stream.close()
+        if binascii.hexlify(h.digest()).decode() != sha:
+            raise OTAError("checksum mismatch: %s" % path)
+        dest = _stage_path(path)
+        _ensure_parent(dest)
+        f = open(dest, "wb")
+        try:
+            f.write(body)
+        finally:
+            f.close()
+        return len(body)
+
+    async def _download_streamed(self, path, sha, base_done, total, progress):
+        """Write as we read, for files too large to hold in RAM."""
         dest = _stage_path(path)
         _ensure_parent(dest)
         h = hashlib.sha256()
@@ -286,7 +335,7 @@ class OTAUpdater:
             f = open(dest, "wb")
             try:
                 while True:
-                    chunk = stream.read(CHUNK)
+                    chunk = stream.read(NET_CHUNK)
                     if not chunk:
                         break
                     f.write(chunk)
@@ -299,8 +348,7 @@ class OTAUpdater:
                 f.close()
         finally:
             stream.close()
-        got = binascii.hexlify(h.digest()).decode()
-        if got != sha:
+        if binascii.hexlify(h.digest()).decode() != sha:
             raise OTAError("checksum mismatch: %s" % path)
         return written
 
