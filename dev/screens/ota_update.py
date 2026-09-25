@@ -8,7 +8,7 @@ callbacks repaint the bar and percentage alone -- the frame is never cleared
 mid-update, which would flash the screen on every callback.
 
 Security: this is a MANUAL, user-triggered update only (no auto-check). Files
-are integrity-checked but not signed — trust of OTA_MANIFEST_URL is assumed.
+are integrity-checked but not signed — the configured host is trusted.
 """
 import time
 
@@ -56,6 +56,29 @@ def _radio_off():
         wlan.active(False)
     except Exception:
         pass
+
+
+def _channel():
+    """The badge's selected OTA channel."""
+    try:
+        from settings_state import BadgeSettings
+        return BadgeSettings().ota_channel
+    except Exception:
+        try:
+            from config import OTA_CHANNEL
+            return OTA_CHANNEL
+        except Exception:
+            return ""
+
+
+def _manifest_url():
+    """Manifest URL for the selected channel, or "" when OTA is unconfigured."""
+    try:
+        import ota
+        from config import OTA_BASE_URL
+        return ota.manifest_url(OTA_BASE_URL, _channel())
+    except Exception:
+        return ""
 
 
 def _credentials():
@@ -136,8 +159,8 @@ class OTAUpdateScreen(Screen):
         # itself deactivates the radio, so this has to be sampled first.
         radio_was_on = _radio_active()
         try:
-            from config import OTA_MANIFEST_URL
-            if not OTA_MANIFEST_URL:
+            manifest = _manifest_url()
+            if not manifest:
                 self._fail("No update URL set")
                 return
 
@@ -155,7 +178,7 @@ class OTAUpdateScreen(Screen):
                 return
 
             import ota
-            updater = ota.OTAUpdater(OTA_MANIFEST_URL)
+            updater = ota.OTAUpdater(manifest)
             res = await updater.run(progress=self._on_progress,
                                     status=self._on_status)
             self._result = res
@@ -243,7 +266,11 @@ class OTAUpdateScreen(Screen):
         _draw_status/_draw_bar, which run straight after."""
         import ota
         ui.screen(display, "UPDATE")
-        ui.center_text(display, "Version %d" % ota.local_version(), 40)
+        channel = _channel()
+        label = "Version %d" % ota.local_version()
+        if channel:
+            label += "  " + channel.upper()
+        ui.center_text(display, label, 40)
 
         if self._state == _STATE_IDLE:
             ui.center_text(display, "Check for the latest", 96)

@@ -58,3 +58,22 @@ class Challenge:
             pet.add_happiness(self.reward_happiness)
         if self.reward_xp:
             pet.gain_xp(self.reward_xp)
+
+
+class LabChallenge(Challenge):
+    """A challenge completed by solving an offline lab (see lab_engine).
+
+    Campaigns subclass this and set `character`, then one class per lab with its
+    id, name, description, prerequisite and reward. Completion is read from the
+    lab's saved state, so the pet screen picks it up on its normal sweep."""
+
+    interactive = True
+    prerequisite = ""
+
+    @classmethod
+    def is_met(cls) -> bool:
+        import challenge_manager
+        if cls.prerequisite and not challenge_manager.is_completed(cls.prerequisite):
+            return False
+        from lab_engine import is_solved
+        return is_solved(cls.id)

@@ -16,6 +16,7 @@ import gc9a01py as gc9a01
 
 from buttons import BOOT, LEFT, RIGHT, SELECT, START
 from image_utils import draw_text
+import ui
 from screen_manager import Screen
 
 
@@ -244,7 +245,7 @@ class VendorScreen(Screen):
         if vendor is not None and len(self._vendors) > 1 and not self._stamping:
             _draw_position(display, self._sel, len(self._vendors))
 
-        _controls(display, "STAMP" if not self._stamping else "STOP")
+        ui.controls(display, "STAMP" if not self._stamping else "STOP")
 
 
 def _load_vendors():
@@ -267,10 +268,6 @@ def _draw_position(display, selected: int, total_items: int) -> None:
     _center_text(display, "%d/%d" % (selected + 1, total_items), 184, _MUTED, _BG)
 
 
-def _controls(display, verb=None) -> None:
-    line = ("SEL BACK  START " + verb) if verb else "SEL BACK"
-    display.fill_rect(0, 196, 240, 44, _PANEL)
-    _center_text(display, line, 202, _MUTED, _PANEL)
 
 
 def _center_text(display, text: str, y: int, fg: int, bg: int) -> None:

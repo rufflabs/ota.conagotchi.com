@@ -1,19 +1,9 @@
 """Stable identities for Hackachi's offline lab campaign."""
-from challenges.base import Challenge
+from challenges.base import LabChallenge
 
 
-class HackachiLab(Challenge):
+class HackachiLab(LabChallenge):
     character = "hackachi"
-    interactive = True
-    prerequisite = ""
-
-    @classmethod
-    def is_met(cls):
-        import challenge_manager
-        if cls.prerequisite and not challenge_manager.is_completed(cls.prerequisite):
-            return False
-        from hackachi_lab import is_solved
-        return is_solved(cls.id)
 
 
 class OpenSecret(HackachiLab):

@@ -6,6 +6,7 @@ import gc9a01py as gc9a01
 
 from buttons import BOOT, LEFT, RIGHT, SELECT, START
 from image_utils import draw_text
+import ui
 from screen_manager import Screen
 
 
@@ -550,7 +551,7 @@ def _draw_confirm(display, kind, sent: str, recv: str, new: bool,
                      _OK if new else _MUTED, _SEL)
 
     _center_text(display, "VIA " + transport, 166, _MUTED, _BG)
-    _controls(display, "OK")
+    ui.controls(display, "OK")
 
 
 def _draw_base(display, chars, selected: int, active_id: str,
@@ -571,11 +572,11 @@ def _draw_base(display, chars, selected: int, active_id: str,
                         active_id, message)
 
     if selected == len(chars):
-        _controls(display, "SYNC")
+        ui.controls(display, "SYNC")
     elif selected > len(chars):
-        _controls(display, "VIEW")
+        ui.controls(display, "VIEW")
     else:
-        _controls(display, "USE")
+        ui.controls(display, "USE")
 
 
 def _draw_char_item(display, char, selected: int, total_items: int,
@@ -646,9 +647,9 @@ def _draw_stamps(display, stamps, selected: int, message: str,
                          message)
 
     if selected >= len(stamps):
-        _controls(display, "SYNC")
+        ui.controls(display, "SYNC")
     else:
-        _controls(display)
+        ui.controls(display)
 
 
 def _draw_stamp_item(display, stamp, selected: int, total_items: int,
@@ -694,13 +695,6 @@ def _draw_position(display, selected: int, total_items: int) -> None:
     _center_text(display, "%d/%d" % (selected + 1, total_items), 184, _MUTED, _BG)
 
 
-def _controls(display, verb=None) -> None:
-    """Standardized bottom instruction line, centred so it clears the bezel.
-
-    SELECT/BOOT are Back; START is the confirm action (pass its verb)."""
-    line = ("SEL BACK  START " + verb) if verb else "SEL BACK"
-    display.fill_rect(0, 196, 240, 44, _PANEL)
-    _center_text(display, line, 202, _MUTED, _PANEL)
 
 
 def _center_text(display, text: str, y: int, fg: int, bg: int) -> None:

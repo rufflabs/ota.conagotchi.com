@@ -4,18 +4,32 @@ import json
 _FLAG_FILE = "challenge_flags.json"
 _MAX_FLAG_LENGTH = 64
 
+# Shown when no flag table is provisioned at all, i.e. a development or test
+# badge. Deliberately not a real-looking flag: anyone seeing this should know
+# immediately that the badge has no event flags on it. A table that exists but
+# is malformed, or an entry left blank, still yields None so that a broken
+# production table cannot be mistaken for a test badge.
+TEST_FLAG = "{TEST_FLAG}"
+
 
 def get_flag(challenge_id):
-    """Return a configured flag, or None for missing/invalid configuration.
+    """Return a configured flag, TEST_FLAG when no table is provisioned, or
+    None for an invalid table or an unconfigured entry.
 
-    This is only a lookup. Player completion is checked by challenge_manager.
+    This is only a lookup, and flags are display-only: player completion is
+    checked by challenge_manager, so a placeholder can never unlock anything.
     Keep decoding here so a future encrypted format need not change quests.
     """
     try:
-        with open(_FLAG_FILE) as f:
-            rows = json.load(f)
-    except (OSError, ValueError):
+        f = open(_FLAG_FILE)
+    except OSError:
+        return TEST_FLAG
+    try:
+        rows = json.load(f)
+    except ValueError:
         return None
+    finally:
+        f.close()
     if not isinstance(rows, list):
         return None
     flags = {}

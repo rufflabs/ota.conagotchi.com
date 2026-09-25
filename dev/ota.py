@@ -122,6 +122,33 @@ def local_version():
         f.close()
 
 
+def manifest_url(base, channel):
+    """Compose a channel's manifest URL. Returns "" when OTA is unconfigured.
+
+    Files are fetched relative to the manifest, so the channel directory is what
+    separates one channel's payload from another's."""
+    base = (base or "").rstrip("/")
+    if not base:
+        return ""
+    channel = (channel or "").strip("/")
+    if not channel:
+        return base + "/manifest.txt"
+    return "%s/%s/manifest.txt" % (base, channel)
+
+
+def clear_version():
+    """Forget the recorded version so the next check applies whatever is served.
+
+    Used when switching channel: counters are per channel and independent, so the
+    new channel may legitimately be on a lower number that would otherwise be
+    refused as a downgrade."""
+    try:
+        os.remove(VERSION_FILE)
+        return True
+    except OSError:
+        return False
+
+
 def _set_local_version(v):
     _ensure_parent(VERSION_FILE)
     f = open(VERSION_FILE, "w")

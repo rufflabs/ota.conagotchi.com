@@ -68,7 +68,8 @@ _DBG_VENDOR = 7
 _DBG_SPLASH = 8
 _DBG_BLUETOOTH = 9
 _DBG_FPS = 10
-_DBG_COUNT = 11
+_DBG_OTA_CHANNEL = 11
+_DBG_COUNT = 12
 _DBG_ROW_Y0 = 40
 _DBG_ROW_DY = 22   # tight enough that the last row clears the status bar (y=170)
 
@@ -631,6 +632,9 @@ class SettingsScreen(Screen):
         if self._sel >= len(items):
             self._sel = len(items) - 1
         action = items[self._sel][2]
+        if action == "badge_mode":
+            self._toggle_badge_mode(mgr)
+            return
         if action == "wifi":
             self._view = _VIEW_WIFI
         elif action == "credits":
@@ -652,8 +656,37 @@ class SettingsScreen(Screen):
             self._message = ""
         self._draw(mgr._display, mgr)
 
+    def _cycle_ota_channel(self, mgr) -> None:
+        """Move to the next channel and forget the recorded OTA version.
+
+        Channel version counters are independent, so the new channel may be on a
+        lower number. Without clearing, the badge would refuse it as a downgrade
+        and silently never update."""
+        from settings_state import ota_channels
+        channels = ota_channels()
+        try:
+            nxt = channels[(channels.index(self._settings.ota_channel) + 1) % len(channels)]
+        except ValueError:
+            nxt = channels[0]
+        if nxt == self._settings.ota_channel:
+            self._message = "CHANNEL " + nxt.upper()
+            self._redraw_debug_current(mgr)
+            return
+        self._settings.ota_channel = nxt
+        self._settings.save()
+        cleared = False
+        try:
+            import ota
+            cleared = ota.clear_version()
+        except Exception:
+            pass
+        self._message = nxt.upper() + (" - VER CLEARED" if cleared else " - NO VER")
+        self._redraw_debug_current(mgr)
+
     def _activate_debug(self, mgr) -> None:
-        if self._debug_sel == _DBG_ENABLE:
+        if self._debug_sel == _DBG_OTA_CHANNEL:
+            self._cycle_ota_channel(mgr)
+        elif self._debug_sel == _DBG_ENABLE:
             self._settings.debug_enabled = not self._settings.debug_enabled
             self._settings.save()
             if not self._settings.debug_enabled:
@@ -767,6 +800,27 @@ class SettingsScreen(Screen):
         else:
             self._settings.password = self._text_value
         self._settings.save()
+
+    def _toggle_badge_mode(self, mgr) -> None:
+        """Cycle the badge mode. Choosing Blinky enters it straight away.
+
+        Blinky replaces the whole UI rather than sitting on the stack, so this
+        uses switch_to; BlinkyScreen clears the saved mode on exit so a badge
+        cannot get stuck in it across reboots."""
+        from settings_state import BADGE_MODES, MODE_BLINKY
+        modes = BADGE_MODES
+        try:
+            nxt = modes[(modes.index(self._settings.badge_mode) + 1) % len(modes)]
+        except ValueError:
+            nxt = modes[0]
+        self._settings.badge_mode = nxt
+        self._settings.save()
+        if nxt == MODE_BLINKY:
+            from screens.blinky import BlinkyScreen
+            mgr.switch_to(BlinkyScreen())
+            return
+        self._message = "MODE " + nxt.upper()
+        self._draw(mgr._display, mgr)
 
     def _toggle_wifi(self) -> None:
         enable = not self._settings.wifi_enabled
@@ -898,13 +952,14 @@ def _main_menu_items(settings: BadgeSettings):
     import theme
     items = [
         ("Wi-Fi", _on_off(settings.wifi_enabled), "wifi"),
+        ("Badge Mode", _badge_mode_label(settings), "badge_mode"),
         ("Credits", "VIEW", "credits"),
     ]
     if settings.debug_enabled:
         items.append(("Debug", "VIEW", "debug"))
     items.append(("Theme", theme.name().upper(), "theme"))
-    from config import OTA_MANIFEST_URL
-    if OTA_MANIFEST_URL:
+    from config import OTA_BASE_URL
+    if OTA_BASE_URL:
         items.append(("Update", _ota_version_label(), "update"))
     items.append(("Factory Reset", "CLEAR", "reset"))
     return items
@@ -920,6 +975,11 @@ def _ota_version_label() -> str:
         return "VIEW"
 
 
+def _badge_mode_label(settings: BadgeSettings) -> str:
+    """CONAGOTCHI or BLINKY, clipped to the width the row value allows."""
+    return _clip(settings.badge_mode.upper(), 12) if settings.badge_mode else "-"
+
+
 def _row_value_fg(value: str) -> int:
     if value == "ON" or value == "ACTIVE":
         return _OK
@@ -928,11 +988,6 @@ def _row_value_fg(value: str) -> int:
     return _MUTED
 
 
-def _window_top(selected: int, count: int, visible: int) -> int:
-    """Scroll offset that keeps `selected` within a `visible`-row window."""
-    if count <= visible:
-        return 0
-    return max(0, min(selected - visible // 2, count - visible))
 
 
 def _draw_list_page(display, title, items, selected, confirm=None,
@@ -943,55 +998,38 @@ def _draw_list_page(display, title, items, selected, confirm=None,
     derived from `selected`, so nav handlers just update the index and redraw.
     """
     import theme
-    display.fill(_BG)
-    display.fill_rect(0, 0, 240, 36, _PANEL)
-    _center_text(display, title, 14, _TEXT, _PANEL)
+    ui.screen(display, title)
     if not items:
-        _center_text(display, empty or "NONE", 104, _WARN, _BG)
+        ui.center_text(display, empty or "NONE", 104, _WARN, _BG)
     else:
-        top = _window_top(selected, len(items), theme.get().rows_visible)
+        top = ui.window_top(selected, len(items), theme.get().rows_visible)
         ui.list_view(display, items, selected, top, value_fg=value_fg)
     if message:
-        _center_text(display, _clip(message, 22), 180, _OK, _BG)
-    _controls(display, confirm)
+        ui.center_text(display, _clip(message, 22), 180, _OK, _BG)
+    ui.controls(display, confirm)
 
 
 def _draw_menu(display, settings: BadgeSettings, selected: int, top: int) -> None:
-    display.fill(_BG)
-    display.fill_rect(0, 0, 240, 36, _PANEL)
-    _center_text(display, "SETTINGS", 14, _TEXT, _PANEL)
+    ui.screen(display, "SETTINGS")
     ui.list_view(display, _main_menu_items(settings), selected, top,
                  value_fg=_row_value_fg)
-    _controls(display, "OK")
+    ui.controls(display, "OK")
 
 
-def _footer(display, line: str) -> None:
-    """Centered bottom instruction line, clear of the round bezel."""
-    display.fill_rect(0, 196, 240, 44, _PANEL)
-    _center_text(display, line, 202, _MUTED, _PANEL)
-
-
-def _controls(display, verb=None) -> None:
-    """Standardized bottom instruction line.
-
-    SELECT (physical left) is Back; START (physical right) is the confirm."""
-    _footer(display, ("SEL BACK  START " + verb) if verb else "SEL BACK")
 
 
 def _draw_debug_page(display, settings: BadgeSettings, pet: PetState,
                      selected: int, message: str, button_status: str) -> None:
-    display.fill(_BG)
-    display.fill_rect(0, 0, 240, 36, _PANEL)
-    _center_text(display, "DEBUG", 14, _TEXT, _PANEL)
+    ui.screen(display, "DEBUG")
 
     import theme
     items = _debug_rows(settings, pet)
-    top = _window_top(selected, len(items), theme.get().rows_visible)
+    top = ui.window_top(selected, len(items), theme.get().rows_visible)
     ui.list_view(display, items, selected, top, value_fg=_row_value_fg)
 
     _draw_debug_status(display, settings, message, button_status)
 
-    _controls(display, "OK")
+    ui.controls(display, "OK")
 
 
 def _debug_rows(settings: BadgeSettings, pet: PetState):
@@ -1007,6 +1045,7 @@ def _debug_rows(settings: BadgeSettings, pet: PetState):
         ("Splash", _splash_value()),
         ("Bluetooth", "VIEW"),
         ("FPS", _on_off(settings.fps_enabled)),
+        ("Update Channel", settings.ota_channel.upper() or "-"),
     )
 
 
@@ -1024,7 +1063,7 @@ def _splash_value() -> str:
 def _draw_debug_status(display, settings: BadgeSettings, message: str, button_status: str) -> None:
     display.fill_rect(0, 170, 240, 28, _BG)
     if message:
-        _center_text(display, message, 174, _MUTED, _BG)
+        ui.center_text(display, message, 174, _MUTED, _BG)
 
 
 def _draw_button_test_page(display, selected: int) -> None:
@@ -1036,10 +1075,8 @@ def _draw_button_test_page(display, selected: int) -> None:
 def _draw_button_live(display, held, tested, secs: int) -> None:
     """Live per-button test: each button lights green while held and keeps a
     checkmark once it has been pressed."""
-    display.fill(_BG)
-    display.fill_rect(0, 0, 240, 36, _PANEL)
-    _center_text(display, "BUTTON TEST", 14, _TEXT, _PANEL)
-    _center_text(display, "{}s   TESTED {}/{}".format(secs, len(tested), len(_BTN_LIVE)),
+    ui.screen(display, "BUTTON TEST")
+    ui.center_text(display, "{}s   TESTED {}/{}".format(secs, len(tested), len(_BTN_LIVE)),
                  46, _MUTED, _BG)
 
     y0 = 74
@@ -1059,14 +1096,12 @@ def _draw_button_live(display, held, tested, secs: int) -> None:
         else:
             display.rect(bx, by, 16, 16, _MUTED)
 
-    _footer(display, "TESTING...")
+    ui.bottom_line(display, "TESTING...")
 
 
 def _draw_led_test_page(display, states, selected: int, message: str) -> None:
-    display.fill(_BG)
-    display.fill_rect(0, 0, 240, 36, _PANEL)
+    ui.screen(display, "LED TESTS")
     display.fill_rect(0, 211, 240, 29, _PANEL)
-    _center_text(display, "LED TESTS", 14, _TEXT, _PANEL)
 
     rows = _led_test_rows(states)
     total = len(rows)
@@ -1078,9 +1113,9 @@ def _draw_led_test_page(display, states, selected: int, message: str) -> None:
         _draw_row(display, y + idx * 24, row[0], row[1], real_idx == selected)
 
     if message:
-        _center_text(display, _clip(message, 22), 186, _MUTED, _BG)
+        ui.center_text(display, _clip(message, 22), 186, _MUTED, _BG)
 
-    _controls(display, "OK")
+    ui.controls(display, "OK")
 
 
 def _led_test_rows(states):
@@ -1108,37 +1143,33 @@ def _led_label(idx: int) -> str:
 
 
 def _draw_editor_page(display, title: str, value: str, bounds: str) -> None:
-    display.fill(_BG)
-    display.fill_rect(0, 0, 240, 36, _PANEL)
+    ui.screen(display, title)
     display.fill_rect(0, 211, 240, 29, _PANEL)
-    _center_text(display, title, 14, _TEXT, _PANEL)
-    _center_text(display, "LEFT / RIGHT", 72, _MUTED, _BG)
-    _center_text(display, "ADJUST VALUE", 92, _MUTED, _BG)
+    ui.center_text(display, "LEFT / RIGHT", 72, _MUTED, _BG)
+    ui.center_text(display, "ADJUST VALUE", 92, _MUTED, _BG)
     display.fill_rect(60, 122, 120, 30, _SEL)
     display.rect(60, 122, 120, 30, _TEXT)
-    _center_text(display, value, 133, _TEXT, _SEL)
-    _center_text(display, bounds, 168, _MUTED, _BG)
-    _controls(display, "SAVE")
+    ui.center_text(display, value, 133, _TEXT, _SEL)
+    ui.center_text(display, bounds, 168, _MUTED, _BG)
+    ui.controls(display, "SAVE")
 
 
 def _draw_reset_page(display) -> None:
-    display.fill(_BG)
-    display.fill_rect(0, 0, 240, 36, _PANEL)
+    ui.screen(display, "FACTORY RESET")
     display.fill_rect(0, 211, 240, 29, _PANEL)
-    _center_text(display, "FACTORY RESET", 14, _TEXT, _PANEL)
-    _center_text(display, "ERASE ALL DATA?", 66, _WARN, _BG)
-    _center_text(display, "Character, stamps,", 96, _MUTED, _BG)
-    _center_text(display, "pet state & settings", 114, _MUTED, _BG)
-    _center_text(display, "will be wiped and the", 132, _MUTED, _BG)
-    _center_text(display, "badge will reboot.", 150, _MUTED, _BG)
-    _center_text(display, "THIS CANNOT BE UNDONE", 176, _WARN, _BG)
-    _controls(display, "WIPE")
+    ui.center_text(display, "ERASE ALL DATA?", 66, _WARN, _BG)
+    ui.center_text(display, "Character, stamps,", 96, _MUTED, _BG)
+    ui.center_text(display, "pet state & settings", 114, _MUTED, _BG)
+    ui.center_text(display, "will be wiped and the", 132, _MUTED, _BG)
+    ui.center_text(display, "badge will reboot.", 150, _MUTED, _BG)
+    ui.center_text(display, "THIS CANNOT BE UNDONE", 176, _WARN, _BG)
+    ui.controls(display, "WIPE")
 
 
 def _draw_reset_progress(display) -> None:
     display.fill(_BG)
-    _center_text(display, "RESETTING", 104, _WARN, _BG)
-    _center_text(display, "REBOOTING...", 128, _MUTED, _BG)
+    ui.center_text(display, "RESETTING", 104, _WARN, _BG)
+    ui.center_text(display, "REBOOTING...", 128, _MUTED, _BG)
 
 
 def _resource_rows(pet):
@@ -1164,16 +1195,14 @@ def _resource_value_fg(value: str) -> int:
 def _draw_resources_page(display, pet, selected: int, message: str) -> None:
     import theme
     rows = _resource_rows(pet)
-    display.fill(_BG)
-    display.fill_rect(0, 0, 240, 36, _PANEL)
-    _center_text(display, "PET RESOURCES", 14, _TEXT, _PANEL)
-    top = _window_top(selected, len(rows), theme.get().rows_visible)
+    ui.screen(display, "PET RESOURCES")
+    top = ui.window_top(selected, len(rows), theme.get().rows_visible)
     ui.list_view(display, rows, selected, top, value_fg=_resource_value_fg)
     if message:
-        _center_text(display, _clip(message, 22), 174, _MUTED, _BG)
+        ui.center_text(display, _clip(message, 22), 174, _MUTED, _BG)
     # START drains a non-empty resource, fills an empty one.
     empty = rows[selected][1] == "0%"
-    _controls(display, "FILL" if empty else "DRAIN")
+    ui.controls(display, "FILL" if empty else "DRAIN")
 
 
 def _draw_character_page(display, characters, selected: int, active_id: str) -> None:
@@ -1232,7 +1261,7 @@ def _draw_wifi_scan_page(display, networks, selected: int) -> None:
 
 
 def _draw_text_editor(display, target: str, value: str, page_idx: int, char_idx: int) -> None:
-    display.fill(_BG)
+    ui.clear(display)
     display.fill_rect(0, 0, 240, 36, _PANEL)
     display.fill_rect(0, 211, 240, 29, _PANEL)
 
@@ -1240,9 +1269,9 @@ def _draw_text_editor(display, target: str, value: str, page_idx: int, char_idx:
     page_name = _CHAR_PAGE_NAMES[page_idx]
     selected = _char_at(page_idx, char_idx)
 
-    _center_text(display, title, 14, _TEXT, _PANEL)
+    ui.center_text(display, title, 14, _TEXT, _PANEL)
     _draw_text_value(display, target, value)
-    _center_text(display, page_name, 58, _MUTED, _BG)
+    ui.center_text(display, page_name, 58, _MUTED, _BG)
     _draw_keyboard(display, page_idx, char_idx)
     _draw_text_action_hint(display, selected)
 
@@ -1289,42 +1318,37 @@ def _char_at(page_idx: int, idx: int) -> str:
 def _draw_text_value(display, target: str, value: str) -> None:
     shown = _clip(value, 20) if target == "ssid" else _mask(value)
     display.fill_rect(0, 40, 240, 16, _BG)
-    _center_text(display, shown or "_", 46, _TEXT, _BG)
+    ui.center_text(display, shown or "_", 46, _TEXT, _BG)
 
 
 def _draw_text_action_hint(display, selected: str) -> None:
     display.fill_rect(0, 186, 240, 18, _BG)
     if selected == "DEL":
-        _center_text(display, "START DELETES", 190, _MUTED, _BG)
+        ui.center_text(display, "START DELETES", 190, _MUTED, _BG)
     elif selected == "SPC":
-        _center_text(display, "START SPACE", 190, _MUTED, _BG)
+        ui.center_text(display, "START SPACE", 190, _MUTED, _BG)
     else:
-        _center_text(display, "START ADDS", 190, _MUTED, _BG)
+        ui.center_text(display, "START ADDS", 190, _MUTED, _BG)
 
 
 def _draw_credits_page(display) -> None:
-    display.fill(_BG)
-    display.fill_rect(0, 0, 240, 36, _PANEL)
-    _center_text(display, "CREDITS", 14, _TEXT, _PANEL)
-    _center_text(display, "OzSec 2026", 56, _TEXT, _BG)
-    _center_text(display, "Conagotchi", 76, _MUTED, _BG)
-    _center_text(display, "Contributors:", 108, _TEXT, _BG)
-    _center_text(display, "rufflabs", 130, _MUTED, _BG)
-    _center_text(display, "baum", 150, _MUTED, _BG)
-    _center_text(display, "Claude and Codex", 170, _MUTED, _BG)
-    _controls(display)
+    ui.screen(display, "CREDITS")
+    ui.center_text(display, "OzSec 2026", 56, _TEXT, _BG)
+    ui.center_text(display, "Conagotchi", 76, _MUTED, _BG)
+    ui.center_text(display, "Contributors:", 108, _TEXT, _BG)
+    ui.center_text(display, "rufflabs", 130, _MUTED, _BG)
+    ui.center_text(display, "baum", 150, _MUTED, _BG)
+    ui.center_text(display, "Claude and Codex", 170, _MUTED, _BG)
+    ui.controls(display)
 
 
 def _draw_flash(display, text: str) -> None:
     """Brief full-width banner (e.g. the DEBUG unlock confirmation)."""
     display.fill_rect(0, 92, 240, 56, _SEL)
     display.rect(0, 92, 240, 56, _TEXT)
-    _center_text(display, text, 116, _TEXT, _SEL)
+    ui.center_text(display, text, 116, _TEXT, _SEL)
 
 
-def _center_text(display, text: str, y: int, fg: int, bg: int) -> None:
-    x = (240 - len(text) * 8) // 2
-    draw_text(display, text, x, y, fg, bg)
 
 
 def _on_off(enabled: bool) -> str:

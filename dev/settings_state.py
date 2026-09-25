@@ -4,6 +4,16 @@ import time
 
 from config import WIFI_PASSWORD, WIFI_SSID
 
+try:
+    from config import OTA_CHANNEL as _DEFAULT_OTA_CHANNEL
+except ImportError:
+    _DEFAULT_OTA_CHANNEL = "prod"
+
+
+# Badge modes. Conagotchi is the pet app; Blinky is a passive LED display.
+MODE_CONAGOTCHI = "conagotchi"
+MODE_BLINKY = "blinky"
+BADGE_MODES = (MODE_CONAGOTCHI, MODE_BLINKY)
 
 _SAVE_DIR = "data"
 _SAVE_FILE = _SAVE_DIR + "/settings.txt"
@@ -21,6 +31,8 @@ class BadgeSettings:
         self.debug_led_cycle_enabled = False
         self.vendor_mode_enabled = False
         self.fps_enabled = False
+        self.ota_channel = _DEFAULT_OTA_CHANNEL
+        self.badge_mode = MODE_CONAGOTCHI
         self.load()
 
     def load(self) -> None:
@@ -46,6 +58,12 @@ class BadgeSettings:
                         self.vendor_mode_enabled = value == "1"
                     elif key == "fps_enabled":
                         self.fps_enabled = value == "1"
+                    elif key == "badge_mode":
+                        # Ignore a mode this firmware does not implement.
+                        self.badge_mode = value if value in BADGE_MODES else MODE_CONAGOTCHI
+                    elif key == "ota_channel":
+                        # Ignore a channel the firmware no longer offers.
+                        self.ota_channel = value if value in ota_channels() else _DEFAULT_OTA_CHANNEL
         except OSError:
             pass
 
@@ -57,6 +75,8 @@ class BadgeSettings:
             f.write("ssid={}\n".format(self.ssid))
             f.write("password={}\n".format(self.password))
             f.write("trusted_bssid={}\n".format(self.trusted_bssid))
+            f.write("ota_channel={}\n".format(self.ota_channel))
+            f.write("badge_mode={}\n".format(self.badge_mode))
             f.write("debug_enabled={}\n".format(1 if self.debug_enabled else 0))
             f.write("debug_led_cycle_enabled={}\n".format(1 if self.debug_led_cycle_enabled else 0))
             f.write("vendor_mode_enabled={}\n".format(1 if self.vendor_mode_enabled else 0))
@@ -94,6 +114,16 @@ class BadgeSettings:
         if changed:
             self.save()
         return wifi_actual, bluetooth_actual
+
+
+def ota_channels() -> tuple:
+    """Channels this firmware offers, from config, with a safe fallback."""
+    try:
+        import config
+        channels = tuple(getattr(config, "OTA_CHANNELS", ()) or ())
+    except Exception:
+        channels = ()
+    return channels or (_DEFAULT_OTA_CHANNEL,)
 
 
 def set_wifi_enabled(enable: bool):
