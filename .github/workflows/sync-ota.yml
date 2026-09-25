@@ -1,0 +1,159 @@
+# Publishes the badge application tree to a channel on the OTA host.
+#
+# Install as .github/workflows/sync-ota.yml in the SITE repository
+# (rufflabs/ota.conagotchi.com). See tools/ota-site/README.md in
+# OzSecICT/badge-conagotchi for setup, secrets and reasoning.
+#
+# Channels:
+#   /dev/  - published automatically from every push to the source repo's main.
+#            Point development badges here.
+#   /prod/ - published ONLY when an ota-v* tag is pushed. Attendee badges point
+#            here, so work can land on main without reaching them.
+#
+# There is deliberately NO schedule trigger: publishing is either tag-gated
+# (prod) or driven by an explicit push event (dev). Nothing publishes on a timer.
+name: Publish OTA payload
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Channel to publish
+        type: choice
+        options: [dev, prod]
+        default: dev
+      ref:
+        description: Ref of the badge repository to publish (branch or tag)
+        default: main
+      force:
+        description: Republish and bump the version even if nothing changed
+        type: boolean
+        default: false
+      prune_legacy_root:
+        description: Also remove the old payload published at the site root
+        type: boolean
+        default: false
+  # Sent by notify-ota.yml in the source repository. client_payload carries the
+  # channel and the exact ref to publish.
+  repository_dispatch:
+    types: [badge-updated]
+
+env:
+  # Switch to https once the certificate is issued for the custom domain.
+  OTA_HOST: http://ota.conagotchi.com
+  SOURCE_REPO: OzSecICT/badge-conagotchi
+
+permissions:
+  contents: write
+
+# The version counter lives in the committed manifest, so two runs on the same
+# channel must never overlap. Keyed by channel so dev and prod can run at once.
+concurrency:
+  group: publish-ota-${{ github.event.inputs.channel || github.event.client_payload.channel || 'dev' }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve channel and ref
+        id: cfg
+        run: |
+          channel='${{ github.event.inputs.channel || github.event.client_payload.channel }}'
+          ref='${{ github.event.inputs.ref || github.event.client_payload.ref }}'
+          channel="${channel:-dev}"
+          ref="${ref:-main}"
+          case "$channel" in
+            dev|prod) ;;
+            *) echo "::error::refusing unknown channel '$channel'"; exit 1 ;;
+          esac
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref"         >> "$GITHUB_OUTPUT"
+          echo "Publishing $ref to /$channel/"
+
+      # Checked out side by side, not nested, so the private source tree can
+      # never be swept into a commit of the public site.
+      - name: Check out the site repository
+        uses: actions/checkout@v4
+        with:
+          path: site
+
+      - name: Check out the badge source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ steps.cfg.outputs.ref }}
+          token: ${{ secrets.BADGE_SOURCE_TOKEN }}
+          path: badge-src
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Record the source revision
+        id: src
+        run: echo "sha=$(git -C badge-src rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Bumps the channel's manifest version only when file hashes change,
+      # refuses config.py and challenge_flags.json, deletes payload files that
+      # left the source tree, and writes .nojekyll at the site root.
+      - name: Build and sync the payload
+        id: publish
+        run: |
+          python badge-src/tools/publish_ota_site.py \
+            --source badge-src/source \
+            --site site \
+            --prefix '${{ steps.cfg.outputs.channel }}' \
+            ${{ github.event.inputs.force == 'true' && '--force' || '' }} \
+            ${{ github.event.inputs.prune_legacy_root == 'true' && '--prune-legacy-root' || '' }}
+
+      - name: Commit and push
+        if: steps.publish.outputs.changed == 'true'
+        working-directory: site
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m "OTA ${{ steps.cfg.outputs.channel }} v${{ steps.publish.outputs.version }} from ${{ env.SOURCE_REPO }}@${{ steps.src.outputs.sha }} (${{ steps.cfg.outputs.ref }})"
+          git push
+
+      - name: Wait for Pages to serve the new version
+        if: steps.publish.outputs.changed == 'true'
+        run: |
+          base="$OTA_HOST/${{ steps.cfg.outputs.channel }}"
+          want='${{ steps.publish.outputs.version }}'
+          for i in $(seq 1 40); do
+            got=$(curl -fsS --max-time 20 "$base/manifest.txt" \
+                  | awk '$1=="version"{print $2; exit}') || got=''
+            if [ "$got" = "$want" ]; then
+              echo "serving version $got after $((i*15))s"
+              exit 0
+            fi
+            echo "attempt $i: serving '${got:-none}', waiting for $want"
+            sleep 15
+          done
+          echo "::error::Pages did not serve version $want within 10 minutes"
+          exit 1
+
+      # The guard that matters. Fetches every path the published manifest names
+      # and fails if any is missing or the wrong size. This is what catches a
+      # Jekyll-style exclusion (files beginning with _, such as
+      # challenges/__init__.py) before a badge discovers it mid-update.
+      - name: Verify every manifest entry is actually served
+        if: steps.publish.outputs.changed == 'true'
+        run: |
+          python badge-src/tools/publish_ota_site.py \
+            --verify-url "$OTA_HOST/${{ steps.cfg.outputs.channel }}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### OTA publish"
+            echo
+            echo "- channel: \`${{ steps.cfg.outputs.channel }}\`"
+            echo "- changed: \`${{ steps.publish.outputs.changed }}\`"
+            echo "- version: \`${{ steps.publish.outputs.version }}\`"
+            echo "- source:  \`${{ env.SOURCE_REPO }}@${{ steps.src.outputs.sha }}\` (\`${{ steps.cfg.outputs.ref }}\`)"
+            echo "- url:     \`$OTA_HOST/${{ steps.cfg.outputs.channel }}/manifest.txt\`"
+          } >> "$GITHUB_STEP_SUMMARY"

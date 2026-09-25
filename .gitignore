@@ -1,0 +1,2 @@
+# The workflow checks the private badge source out here; never commit it.
+badge-src/
