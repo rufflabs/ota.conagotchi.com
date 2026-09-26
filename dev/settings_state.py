@@ -15,6 +15,11 @@ MODE_CONAGOTCHI = "conagotchi"
 MODE_BLINKY = "blinky"
 BADGE_MODES = (MODE_CONAGOTCHI, MODE_BLINKY)
 
+# On-screen keyboard layouts (keyboards.py implements them).
+KEYBOARD_GRID = "grid"
+KEYBOARD_T9 = "t9"
+KEYBOARDS = (KEYBOARD_GRID, KEYBOARD_T9)
+
 _SAVE_DIR = "data"
 _SAVE_FILE = _SAVE_DIR + "/settings.txt"
 _BLE = None
@@ -33,6 +38,7 @@ class BadgeSettings:
         self.fps_enabled = False
         self.ota_channel = _DEFAULT_OTA_CHANNEL
         self.badge_mode = MODE_CONAGOTCHI
+        self.keyboard = KEYBOARD_T9
         self.load()
 
     def load(self) -> None:
@@ -61,6 +67,8 @@ class BadgeSettings:
                     elif key == "badge_mode":
                         # Ignore a mode this firmware does not implement.
                         self.badge_mode = value if value in BADGE_MODES else MODE_CONAGOTCHI
+                    elif key == "keyboard":
+                        self.keyboard = value if value in KEYBOARDS else KEYBOARD_T9
                     elif key == "ota_channel":
                         # Ignore a channel the firmware no longer offers.
                         self.ota_channel = value if value in ota_channels() else _DEFAULT_OTA_CHANNEL
@@ -77,6 +85,7 @@ class BadgeSettings:
             f.write("trusted_bssid={}\n".format(self.trusted_bssid))
             f.write("ota_channel={}\n".format(self.ota_channel))
             f.write("badge_mode={}\n".format(self.badge_mode))
+            f.write("keyboard={}\n".format(self.keyboard))
             f.write("debug_enabled={}\n".format(1 if self.debug_enabled else 0))
             f.write("debug_led_cycle_enabled={}\n".format(1 if self.debug_led_cycle_enabled else 0))
             f.write("vendor_mode_enabled={}\n".format(1 if self.vendor_mode_enabled else 0))
@@ -94,7 +103,14 @@ class BadgeSettings:
         self.save()
 
     def forget_network(self) -> None:
-        self.wifi_enabled = False
+        """Drop the saved network: credentials back to the shipped defaults and
+        the pinned AP cleared. The radio is left as it is; callers disconnect.
+
+        Defaults rather than blank, because load() already treats a blank saved
+        SSID or password as "use the default" - a blank would not survive a
+        reboot anyway."""
+        self.ssid = WIFI_SSID
+        self.password = WIFI_PASSWORD
         self.trusted_bssid = ""
         self.save()
 
@@ -145,6 +161,38 @@ def set_wifi_enabled(enable: bool):
         return None
 
 
+def wifi_status():
+    """(radio_active, connected) as the hardware reports it, or None if there
+    is no Wi-Fi. The saved `wifi_enabled` is only what to restore at boot;
+    scanning and connecting power the radio up, so the screen must ask the
+    hardware rather than trust the setting."""
+    try:
+        import network
+        wlan = network.WLAN(network.STA_IF)
+        active = bool(wlan.active())
+        return active, active and bool(wlan.isconnected())
+    except Exception:
+        return None
+
+
+def disconnect_wifi() -> bool:
+    """Leave the current network but keep the radio powered. Returns True if
+    there was a link to drop."""
+    try:
+        import network
+        wlan = network.WLAN(network.STA_IF)
+        if not wlan.active():
+            return False
+        was = bool(wlan.isconnected())
+        try:
+            wlan.disconnect()
+        except Exception:
+            pass
+        return was
+    except Exception:
+        return False
+
+
 def connect_saved_wifi(ssid: str, password: str, trusted_bssid: str = "") -> tuple:
     """Connect only to a saved, non-open AP. Returns (connected, code, bssid)."""
     if not ssid or not password:
@@ -161,15 +209,56 @@ def connect_saved_wifi(ssid: str, password: str, trusted_bssid: str = "") -> tup
             wlan.disconnect()
         except Exception:
             pass
+        limit_reconnects(wlan)
         wlan.connect(ssid, password, bssid=bssid)
         deadline = _ticks_add(_ticks_ms(), 6000)
         while _ticks_diff(deadline, _ticks_ms()) > 0:
             if wlan.isconnected():
                 return True, "CONNECTED", _bssid_hex(bssid)
+            if _wrong_password(wlan):
+                stop_connecting(wlan)
+                return False, "BAD PASS", _bssid_hex(bssid)
             _sleep_ms(100)
+        stop_connecting(wlan)
         return False, "TIMEOUT", _bssid_hex(bssid)
     except Exception:
+        stop_connecting()
         return False, "ERROR", trusted_bssid
+
+
+# The ESP32 driver's default is -1: retry a failed or dropped association
+# forever, in the background, for as long as the radio is on. A badge with a
+# wrong or stale password then hammers the AP indefinitely, and every refusal is
+# a deauth on the air - multiplied by every badge at the event. Allow a few
+# retries so a brief drop recovers, and cancel outright when we give up.
+WIFI_RECONNECTS = 3
+
+
+def limit_reconnects(wlan) -> None:
+    try:
+        wlan.config(reconnects=WIFI_RECONNECTS)
+    except Exception:
+        pass
+
+
+def stop_connecting(wlan=None) -> None:
+    """Cancel a pending connect so the driver stops retrying in the background.
+    The radio stays powered."""
+    try:
+        if wlan is None:
+            import network
+            wlan = network.WLAN(network.STA_IF)
+        wlan.disconnect()
+    except Exception:
+        pass
+
+
+def _wrong_password(wlan) -> bool:
+    try:
+        import network
+        return wlan.status() == network.STAT_WRONG_PASSWORD
+    except Exception:
+        return False
 
 
 def scan_wifi_networks(limit: int = 8) -> list:

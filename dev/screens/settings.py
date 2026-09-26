@@ -13,8 +13,10 @@ from settings_state import (
     BadgeSettings,
     check_connectivity,
     connect_saved_wifi,
+    disconnect_wifi,
     scan_wifi_networks,
     set_wifi_enabled,
+    wifi_status,
 )
 
 
@@ -41,7 +43,6 @@ def _sync_theme() -> None:
 _VIEW_MENU = "menu"
 _VIEW_WIFI = "wifi"
 _VIEW_WIFI_SCAN = "wifi_scan"
-_VIEW_TEXT = "text"
 _VIEW_CREDITS = "credits"
 _VIEW_DEBUG = "debug"
 _VIEW_BUTTONS = "buttons"          # duration picker
@@ -81,8 +82,9 @@ _WIFI_CONNECT = 2
 _WIFI_CHECK = 3
 _WIFI_SSID = 4
 _WIFI_PASSWORD = 5
-_WIFI_FORGET = 6
-_WIFI_COUNT = 7
+_WIFI_DISCONNECT = 6
+_WIFI_FORGET = 7
+_WIFI_COUNT = 8
 _BTN_DURATIONS = (5, 10, 15, 30)   # seconds offered by the button-test picker
 _LED_ALERT = 0
 _LED_RAFFLE = 1
@@ -90,19 +92,6 @@ _LED_RGB_START = 2
 _LED_ALL_OFF = NUM_RGB_LEDS + 2
 _LED_EXIT = NUM_RGB_LEDS + 3
 _LED_COUNT = NUM_RGB_LEDS + 4
-_KEY_COLS = 6
-_KEY_W = 32
-_KEY_H = 20
-_KEY_GAP = 4
-_KEY_X = (240 - (_KEY_COLS * _KEY_W + (_KEY_COLS - 1) * _KEY_GAP)) // 2
-_KEY_Y = 72
-
-_CHAR_PAGE_NAMES = ("ABC", "abc", "SYM")
-_CHAR_PAGE_CHARS = (
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-    "abcdefghijklmnopqrstuvwxyz",
-    "0123456789-_.@#!?$%&*+/=",
-)
 _LED_TEST_COLORS = (
     (25, 0, 0),
     (25, 18, 0),
@@ -156,10 +145,7 @@ class SettingsScreen(Screen):
         self._wifi_sel = 0
         self._wifi_network_sel = 0
         self._wifi_networks = ()
-        self._text_target = "ssid"
-        self._text_value = ""
-        self._char_page = 0
-        self._char_idx = 0
+        self._resume_view = _VIEW_MENU  # view to return to after a pushed screen
         self._character_sel = 0
         self._characters = ()
         self._active_char_id = ""
@@ -178,7 +164,8 @@ class SettingsScreen(Screen):
             self._leds_all_off(leds)
 
     async def resume(self, display, leds, mgr) -> None:
-        self._view = _VIEW_MENU
+        self._view = self._resume_view
+        self._resume_view = _VIEW_MENU
         self._pet = _load_pet(mgr)
         self._draw(display, mgr)
 
@@ -222,8 +209,6 @@ class SettingsScreen(Screen):
             self._handle_wifi_button(btn, mgr)
         elif self._view == _VIEW_WIFI_SCAN:
             self._handle_wifi_scan_button(btn, mgr)
-        elif self._view == _VIEW_TEXT:
-            self._handle_text_button(btn, mgr)
         elif self._view == _VIEW_CREDITS:
             self._handle_credits_button(btn, mgr)
         elif self._view != _VIEW_MENU:
@@ -290,13 +275,16 @@ class SettingsScreen(Screen):
             elif self._wifi_sel == _WIFI_CHECK:
                 self._check_connectivity(mgr)
             elif self._wifi_sel == _WIFI_SSID:
-                self._open_text_editor("ssid", self._settings.ssid, mgr._display, mgr)
+                self._open_text_editor("ssid", mgr)
             elif self._wifi_sel == _WIFI_PASSWORD:
-                self._open_text_editor("password", self._settings.password, mgr._display, mgr)
+                self._open_text_editor("password", mgr)
+            elif self._wifi_sel == _WIFI_DISCONNECT:
+                self._message = "DISCONNECTED" if disconnect_wifi() else "NOT CONNECTED"
+                self._draw(mgr._display, mgr)
             elif self._wifi_sel == _WIFI_FORGET:
-                set_wifi_enabled(False)
+                disconnect_wifi()
                 self._settings.forget_network()
-                self._message = "TRUST CLEARED"
+                self._message = "FORGOTTEN"
                 self._draw(mgr._display, mgr)
 
     def _handle_wifi_scan_button(self, btn: str, mgr) -> None:
@@ -321,46 +309,12 @@ class SettingsScreen(Screen):
                 self._settings.password = ""
             self._settings.ssid = ssid
             self._settings.trusted_bssid = ""
-            self._settings.wifi_enabled = False
             self._settings.save()
-            set_wifi_enabled(False)
+            disconnect_wifi()   # leave the old network; the radio stays on
             self._wifi_sel = _WIFI_PASSWORD
             self._view = _VIEW_WIFI
             self._message = "SSID SAVED"
             self._draw(mgr._display, mgr)
-
-    def _handle_text_button(self, btn: str, mgr) -> None:
-        if btn == BOOT:
-            self._save_text_editor()
-            self._view = _VIEW_WIFI
-            self._message = "SAVED"
-            self._draw(mgr._display, mgr)
-        elif btn == LEFT:
-            self._move_text_cursor(-1, mgr._display)
-        elif btn == RIGHT:
-            self._move_text_cursor(1, mgr._display)
-        elif btn == SELECT:
-            self._char_page = (self._char_page + 1) % len(_CHAR_PAGE_NAMES)
-            self._char_idx = 0
-            self._draw(mgr._display, mgr)
-        elif btn == START:
-            selected = _char_at(self._char_page, self._char_idx)
-            if selected == "DEL":
-                self._text_value = self._text_value[:-1]
-            elif selected == "SPC" and len(self._text_value) < 32:
-                self._text_value += " "
-            elif len(self._text_value) < 32:
-                self._text_value += selected
-            _draw_text_value(mgr._display, self._text_target, self._text_value)
-
-    def _move_text_cursor(self, delta: int, display) -> None:
-        old_idx = self._char_idx
-        self._char_idx = (self._char_idx + delta) % _char_count(self._char_page)
-        if self._char_idx == old_idx:
-            return
-        _draw_keyboard_key(display, self._char_page, old_idx, False)
-        _draw_keyboard_key(display, self._char_page, self._char_idx, True)
-        _draw_text_action_hint(display, _char_at(self._char_page, self._char_idx))
 
     def _move_wifi_network(self, delta: int, display) -> None:
         if not self._wifi_networks:
@@ -635,6 +589,9 @@ class SettingsScreen(Screen):
         if action == "badge_mode":
             self._toggle_badge_mode(mgr)
             return
+        if action == "keyboard":
+            self._toggle_keyboard(mgr)
+            return
         if action == "wifi":
             self._view = _VIEW_WIFI
         elif action == "credits":
@@ -786,20 +743,34 @@ class SettingsScreen(Screen):
                 return screen
         return None
 
-    def _open_text_editor(self, target: str, value: str, display, mgr) -> None:
-        self._text_target = target
-        self._text_value = value
-        self._char_page = 0
-        self._char_idx = 0
-        self._view = _VIEW_TEXT
-        self._draw(display, mgr)
+    def _open_text_editor(self, target: str, mgr) -> None:
+        """Edit the SSID or password on the shared keyboard screen, coming back
+        to the Wi-Fi page afterwards."""
+        from screens.text_input import TextInputScreen
+        secret = target == "password"
+        value = self._settings.password if secret else self._settings.ssid
+        self._resume_view = _VIEW_WIFI
+        mgr.push(TextInputScreen("EDIT PASS" if secret else "EDIT SSID", value,
+                                 on_done=lambda v: self._save_text(target, v),
+                                 secret=secret))
 
-    def _save_text_editor(self) -> None:
-        if self._text_target == "ssid":
-            self._settings.ssid = self._text_value
+    def _save_text(self, target: str, value: str) -> None:
+        if target == "ssid":
+            self._settings.ssid = value
         else:
-            self._settings.password = self._text_value
+            self._settings.password = value
         self._settings.save()
+        self._message = "SAVED"
+
+    def _toggle_keyboard(self, mgr) -> None:
+        from settings_state import KEYBOARDS
+        cur = self._settings.keyboard
+        nxt = KEYBOARDS[(KEYBOARDS.index(cur) + 1) % len(KEYBOARDS)] \
+            if cur in KEYBOARDS else KEYBOARDS[0]
+        self._settings.keyboard = nxt
+        self._settings.save()
+        self._message = "KEYBOARD " + _keyboard_label(self._settings)
+        self._draw(mgr._display, mgr)
 
     def _toggle_badge_mode(self, mgr) -> None:
         """Cycle the badge mode. Choosing Blinky enters it straight away.
@@ -823,7 +794,10 @@ class SettingsScreen(Screen):
         self._draw(mgr._display, mgr)
 
     def _toggle_wifi(self) -> None:
-        enable = not self._settings.wifi_enabled
+        # Toggle what the radio is actually doing: a scan may have powered it
+        # up while the saved setting still said off.
+        status = wifi_status()
+        enable = not (status[0] if status else self._settings.wifi_enabled)
         actual = set_wifi_enabled(enable)
         if actual is None:
             self._message = "WIFI N/A"
@@ -835,7 +809,23 @@ class SettingsScreen(Screen):
         else:
             self._message = "WIFI ERR"
 
+    def _radio_on(self) -> bool:
+        """Scanning and connecting need the radio. Turn it on the same way the
+        Radio row would, so the page and the saved setting both say ON, rather
+        than powering it up behind the user's back."""
+        actual = set_wifi_enabled(True)
+        if not actual:
+            self._message = "WIFI N/A" if actual is None else "WIFI ERR"
+            return False
+        if not self._settings.wifi_enabled:
+            self._settings.wifi_enabled = True
+            self._settings.save()
+        return True
+
     def _scan_wifi(self, mgr) -> None:
+        if not self._radio_on():
+            self._draw(mgr._display, mgr)
+            return
         self._message = "SCANNING"
         self._draw(mgr._display, mgr)
         self._wifi_networks = tuple(scan_wifi_networks())
@@ -848,6 +838,8 @@ class SettingsScreen(Screen):
         self._draw(mgr._display, mgr)
 
     def _connect_wifi(self) -> None:
+        if not self._radio_on():
+            return
         connected, code, bssid = connect_saved_wifi(
             self._settings.ssid, self._settings.password, self._settings.trusted_bssid
         )
@@ -896,9 +888,6 @@ class SettingsScreen(Screen):
             _draw_wifi_page(display, self._settings, self._wifi_sel, self._message)
         elif self._view == _VIEW_WIFI_SCAN:
             _draw_wifi_scan_page(display, self._wifi_networks, self._wifi_network_sel)
-        elif self._view == _VIEW_TEXT:
-            _draw_text_editor(display, self._text_target, self._text_value,
-                              self._char_page, self._char_idx)
         elif self._view == _VIEW_CREDITS:
             _draw_credits_page(display)
         elif self._view == _VIEW_DEBUG:
@@ -951,8 +940,9 @@ def _main_menu_items(settings: BadgeSettings):
     turned on by the BOOT x5 combo on the Credits screen."""
     import theme
     items = [
-        ("Wi-Fi", _on_off(settings.wifi_enabled), "wifi"),
+        ("Wi-Fi", _wifi_label(settings), "wifi"),
         ("Badge Mode", _badge_mode_label(settings), "badge_mode"),
+        ("Keyboard", _keyboard_label(settings), "keyboard"),
         ("Credits", "VIEW", "credits"),
     ]
     if settings.debug_enabled:
@@ -975,13 +965,23 @@ def _ota_version_label() -> str:
         return "VIEW"
 
 
+def _wifi_label(settings: BadgeSettings) -> str:
+    """The radio's real state for the menu row, not just the boot setting."""
+    status = wifi_status()
+    return _on_off(status[0] if status else settings.wifi_enabled)
+
+
+def _keyboard_label(settings: BadgeSettings) -> str:
+    return "T9" if settings.keyboard == "t9" else "GRID"
+
+
 def _badge_mode_label(settings: BadgeSettings) -> str:
     """CONAGOTCHI or BLINKY, clipped to the width the row value allows."""
     return _clip(settings.badge_mode.upper(), 12) if settings.badge_mode else "-"
 
 
 def _row_value_fg(value: str) -> int:
-    if value == "ON" or value == "ACTIVE":
+    if value == "ON" or value == "ACTIVE" or value == "LINKED":
         return _OK
     if value == "OFF":
         return _OFF
@@ -1242,14 +1242,21 @@ def _draw_row(display, y: int, label: str, value: str, selected: bool) -> None:
 
 
 def _draw_wifi_page(display, settings: BadgeSettings, selected: int, message: str) -> None:
+    status = wifi_status()
+    radio, linked = status if status else (settings.wifi_enabled, False)
+    if linked:
+        connect = "LINKED"
+    else:
+        connect = "SAVED" if settings.ssid and settings.password else "ADD"
     rows = [
-        ("Radio", _on_off(settings.wifi_enabled)),
+        ("Radio", _on_off(radio)),
         ("Scan Networks", "FIND"),
-        ("Connect", "SAVED" if settings.ssid and settings.password else "ADD"),
+        ("Connect", connect),
         ("Net Check", "TEST"),
         ("SSID", _clip(settings.ssid, 12) if settings.ssid else "<empty>"),
         ("Password", _mask(settings.password)),
-        ("Untrust AP", "CLEAR"),
+        ("Disconnect", "DROP"),
+        ("Forget Network", "CLEAR"),
     ]
     _draw_list_page(display, "WI-FI", rows, selected, confirm="OK", message=message)
 
@@ -1258,77 +1265,6 @@ def _draw_wifi_scan_page(display, networks, selected: int) -> None:
     items = [(_clip(n[0], 14), "{}dB".format(n[1])) for n in networks]
     _draw_list_page(display, "SELECT NETWORK", items, selected,
                     confirm="USE", empty="NO NETWORKS")
-
-
-def _draw_text_editor(display, target: str, value: str, page_idx: int, char_idx: int) -> None:
-    ui.clear(display)
-    display.fill_rect(0, 0, 240, 36, _PANEL)
-    display.fill_rect(0, 211, 240, 29, _PANEL)
-
-    title = "EDIT SSID" if target == "ssid" else "EDIT PASS"
-    page_name = _CHAR_PAGE_NAMES[page_idx]
-    selected = _char_at(page_idx, char_idx)
-
-    ui.center_text(display, title, 14, _TEXT, _PANEL)
-    _draw_text_value(display, target, value)
-    ui.center_text(display, page_name, 58, _MUTED, _BG)
-    _draw_keyboard(display, page_idx, char_idx)
-    _draw_text_action_hint(display, selected)
-
-    draw_text(display, "SELECT PAGE", 8, 219, _MUTED, _PANEL)
-    draw_text(display, "BOOT SAVE", 160, 219, _MUTED, _PANEL)
-
-
-def _draw_keyboard(display, page_idx: int, selected: int) -> None:
-    for idx in range(_char_count(page_idx)):
-        _draw_keyboard_key(display, page_idx, idx, idx == selected)
-
-
-def _draw_keyboard_key(display, page_idx: int, idx: int, selected: bool) -> None:
-    ch = _char_at(page_idx, idx)
-    row = idx // _KEY_COLS
-    col = idx % _KEY_COLS
-    x = _KEY_X + col * (_KEY_W + _KEY_GAP)
-    y = _KEY_Y + row * (_KEY_H + _KEY_GAP)
-    label_x = x + (_KEY_W - len(ch) * 8) // 2
-    label_y = y + (_KEY_H - 8) // 2
-    if selected:
-        display.fill_rect(x, y, _KEY_W, _KEY_H, _SEL)
-        display.rect(x, y, _KEY_W, _KEY_H, gc9a01.WHITE)
-        draw_text(display, ch, label_x, label_y, _TEXT, _SEL)
-    else:
-        display.fill_rect(x, y, _KEY_W, _KEY_H, _BG)
-        display.rect(x, y, _KEY_W, _KEY_H, _PANEL)
-        draw_text(display, ch, label_x, label_y, _MUTED, _BG)
-
-
-def _char_count(page_idx: int) -> int:
-    return len(_CHAR_PAGE_CHARS[page_idx]) + 2
-
-
-def _char_at(page_idx: int, idx: int) -> str:
-    chars = _CHAR_PAGE_CHARS[page_idx]
-    if idx < len(chars):
-        return chars[idx]
-    if idx == len(chars):
-        return "SPC"
-    return "DEL"
-
-
-def _draw_text_value(display, target: str, value: str) -> None:
-    shown = _clip(value, 20) if target == "ssid" else _mask(value)
-    display.fill_rect(0, 40, 240, 16, _BG)
-    ui.center_text(display, shown or "_", 46, _TEXT, _BG)
-
-
-def _draw_text_action_hint(display, selected: str) -> None:
-    display.fill_rect(0, 186, 240, 18, _BG)
-    if selected == "DEL":
-        ui.center_text(display, "START DELETES", 190, _MUTED, _BG)
-    elif selected == "SPC":
-        ui.center_text(display, "START SPACE", 190, _MUTED, _BG)
-    else:
-        ui.center_text(display, "START ADDS", 190, _MUTED, _BG)
 
 
 def _draw_credits_page(display) -> None:
