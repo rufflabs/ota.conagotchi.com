@@ -1,5 +1,5 @@
 # OzSec badge OTA manifest
-version 6
+version 7
 note ## Games and chat
 note - New game: Blocks
 note - New: Rock Paper Scissors, vs the bot or another badge
