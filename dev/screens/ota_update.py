@@ -4,8 +4,9 @@ Shows the current OTA version, lets the user START a check, connects WiFi and
 compares files. When there is an update it shows the new version, the
 download size and the release notes the manifest carries, in a scrolling
 window (LEFT/RIGHT); START installs (streams changed files with a progress
-bar, verifies sha256, commits, reboots) and SELECT cancels. The notes follow
-Settings -> Badge -> Text Size.
+bar, verifies sha256, commits, reboots) and SELECT cancels. Every page follows
+Settings -> Badge -> Text Size: in large mode the text is 2x, with shorter
+wording where only 10 characters fit.
 The download runs as an asyncio task so the UI stays responsive; the task only
 mutates instance state, and update() redraws the regions that changed. Progress
 callbacks repaint the bar and percentage alone -- the frame is never cleared
@@ -347,6 +348,9 @@ class OTAUpdateScreen(Screen):
         _draw_status/_draw_bar, which run straight after."""
         import ota
         ui.screen(display, "UPDATE")
+        if ui.list_scale() == 2:
+            self._draw_frame_large(display, ota.local_version())
+            return
         channel = _channel()
         label = "Version %d" % ota.local_version()
         if channel:
@@ -388,11 +392,51 @@ class OTAUpdateScreen(Screen):
                           112, line_h=16)
             ui.controls(display, "RETRY")
 
+    def _draw_frame_large(self, display, version):
+        """_draw_frame in large text: 2x lines of at most 10 characters."""
+        channel = _channel()
+        ui.status(display, ("v%d %s" % (version, channel.upper())).strip(), 42,
+                  "text", 2)
+        st = self._state
+        if st == _STATE_IDLE:
+            ui.scaled_lines(display, ("CHECK FOR", "THE LATEST", "SOFTWARE"), 80)
+            ui.controls(display, "CHECK")
+        elif st == _STATE_READY:
+            c = self._checked
+            ui.status(display, "NEW v%d" % c["version"], 62, "success", 2)
+            ui.status(display, "%d KB" % ((c["bytes"] + 1023) // 1024), 82, "muted", 2)
+            self._draw_notes(display)
+            ui.controls(display, "INSTALL")
+        elif st == _STATE_RUNNING:
+            ui.status(display, "KEEP IT ON", 170, "muted", 2)
+        elif st == _STATE_DONE:
+            res = self._result or {}
+            if res.get("updated"):
+                head, kind = "UPDATED", "success"
+            elif res.get("reason") == "up-to-date":
+                head, kind = "UP TO DATE", "muted"
+            else:
+                head, kind = "CURRENT", "muted"
+            ui.scaled_lines(display, ((head, kind), "v%d" % res.get("version", version)), 80)
+            if res.get("updated"):
+                ui.status(display, "REBOOTING", 130, "text", 2)
+            else:
+                ui.controls(display, "AGAIN")
+        elif st == _STATE_NO_WIFI:
+            ui.scaled_lines(display, (("NO WI-FI", "warning"), "",
+                                      ("SETTINGS >", "muted"), ("WIRELESS >", "muted"),
+                                      ("WI-FI", "muted")), 72)
+            ui.controls(display, "RETRY")
+        elif st == _STATE_ERROR:
+            ui.scaled_lines(display, [("FAILED", "danger"), ""] +
+                            [(l, "muted") for l in ui.wrap_text(self._error, 10)[:4]], 72)
+            ui.controls(display, "RETRY")
+
     def _draw_notes(self, display):
         """The release notes window alone, so scrolling does not blink."""
         k = ui.list_scale()
         rows, line_h = _NOTES_ROWS[k], _NOTES_LINE_H[k]
-        y0 = _NOTES_Y + (8 if k == 2 else 0)
+        y0 = _NOTES_Y + (12 if k == 2 else 0)
         lines = self._note_lines()
         ui.clear_band(display, y0 - 2, rows * line_h + 2)
         if not lines:
@@ -405,6 +449,9 @@ class OTAUpdateScreen(Screen):
     def _draw_status(self, display):
         """Repaint just the status row (cleared first: the text is centred, so
         a shorter message would otherwise leave the old one's tails behind)."""
+        if ui.list_scale() == 2:
+            ui.status_row(display, _short_status(self._status), _STATUS_Y, "accent", 2)
+            return
         display.fill_rect(0, _STATUS_Y, 240, _TEXT_H, theme.get().bg)
         ui.status(display, self._status, _STATUS_Y, "accent")
 
@@ -415,5 +462,18 @@ class OTAUpdateScreen(Screen):
         pct = self._pct()
         self._last_fill = ui.progress_bar(display, _BAR_Y, pct, h=_BAR_H,
                                           w=_BAR_W, prev=self._last_fill)
+        if ui.list_scale() == 2:
+            ui.status_row(display, "%d%%" % pct, _PCT_Y, "text", 2)
+            return
         display.fill_rect(0, _PCT_Y, 240, _TEXT_H, theme.get().bg)
         ui.status(display, "%d%%" % pct, _PCT_Y)
+
+
+def _short_status(status):
+    """A running update's status line in 10 characters, for large text."""
+    for start, short in (("Get ", "LOADING"), ("Connecting", "WI-FI..."),
+                         ("Fetching", "CHECKING"), ("Comparing", "CHECKING"),
+                         ("Installing", "INSTALLING"), ("Starting", "STARTING")):
+        if status.startswith(start):
+            return short
+    return status.upper()[:10]

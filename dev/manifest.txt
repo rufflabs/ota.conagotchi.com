@@ -1,5 +1,5 @@
 # OzSec badge OTA manifest
-version 7
+version 8
 note ## Games and chat
 note - New game: Blocks
 note - New: Rock Paper Scissors, vs the bot or another badge
@@ -84,7 +84,7 @@ file ba713bc6c4493da2fb49171e1f44ad6763d074cdb724103ff025430115398368 1843 scree
 file 70c231d96282249d0dc35b7af123b29d8a19146ab1ac7f1f4ca82f8e3111be1a 1223 screens/games_menu.py
 file 3b51202c45a62897fbf658ece9a6e00e3a40ef464be87e53ee6ef442157f6221 10803 screens/lab.py
 file 47ee6d8381adc57e22b1d80be0f79f990654ed9b3ad22c407191c1d1ef70ed8b 9155 screens/lobby.py
-file 7ac9b11cdf75c448d0b503da46c24843247fe84715bae6439bb722b2259aaad2 16273 screens/ota_update.py
+file 93482d70d1387e208c6ec4cc2fddc2a261ec1ab062483e90fb54b4b97d09a19c 19122 screens/ota_update.py
 file f26edc1edbad1c2f86d907b9d4e64a53bc352260de47823eb3dca2333f47caf6 3123 screens/pet_menu.py
 file 64cdafe6af4d46f7f6803eac9fbc82df925330cb43fb95e1d32d83fb3dfba574 10255 screens/rps.py
 file 5e10f80b8616e59e03aa2ff05d2cefa1931ce225ceda6c17dc84bcb154e83a1d 41663 screens/settings.py
