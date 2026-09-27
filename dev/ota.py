@@ -43,6 +43,11 @@ NET_CHUNK = 4096      # socket reads; measurably faster than 1 KiB on-device
 # what a manifest asks for.
 BUFFER_MAX = 262144   # 256 KiB
 
+# Release notes carried in the manifest (`note <text>` lines), shown before
+# installing. Display-only and untrusted: printable ASCII, bounded.
+MAX_NOTES = 60
+NOTE_MAX_LEN = 160
+
 _S_IFDIR = 0x4000
 
 
@@ -73,15 +78,22 @@ def sha256_file(path, chunk=CHUNK):
 # ── manifest ─────────────────────────────────────────────────────────────────
 
 def parse_manifest(text):
-    """Parse a manifest into {'version': int, 'files': [(path, sha, size), ...]}.
+    """Parse a manifest into {'version': int, 'files': [(path, sha, size), ...],
+    'notes': [str, ...]}.
 
     Format (blank lines and `#` comments ignored):
         version 3
+        note ## Sep 27
+        note - Blocks and Rock Paper Scissors
         file <sha256hex> <size> <path/relative/to/fs/root>
-    Unknown leading keywords are ignored so the format can grow (e.g. `sig`).
+    `note` lines are the release notes, in order (see tools/build_ota_manifest.py
+    --notes); they are cleaned and capped here since the manifest is untrusted.
+    Unknown leading keywords are ignored so the format can grow (e.g. `sig`),
+    which is also why badges older than notes simply skip them.
     """
     version = 0
     files = []
+    notes = []
     for raw in text.split("\n"):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -94,8 +106,15 @@ def parse_manifest(text):
         elif key == "file":
             sha, size, path = arg.split(None, 2)
             files.append((path, sha, int(size)))
+        elif key == "note" and len(notes) < MAX_NOTES:
+            notes.append(_clean_note(arg))
         # else: unknown keyword, ignore for forward-compat
-    return {"version": version, "files": files}
+    return {"version": version, "files": files, "notes": notes}
+
+
+def _clean_note(text):
+    """A release-notes line as the badge can show it: printable ASCII only."""
+    return "".join(c for c in text if 32 <= ord(c) <= 126)[:NOTE_MAX_LEN].rstrip()
 
 
 def compute_plan(manifest):
@@ -379,31 +398,54 @@ class OTAUpdater:
             raise OTAError("checksum mismatch: %s" % path)
         return written
 
+    def check(self, status=None):
+        """Find out whether there is an update, without downloading anything.
+        Returns {'available': bool, 'reason': str, 'version': int,
+        'notes': [str], 'plan': [(path, sha, size)], 'count': int,
+        'bytes': int}. Pass it to install() to apply the update."""
+        if status:
+            status("Fetching manifest")
+        manifest = self.fetch_manifest()
+        remote_v = manifest["version"]
+        cur_v = local_version()
+        result = {"available": False, "version": cur_v, "notes": [],
+                  "plan": [], "count": 0, "bytes": 0}
+        if remote_v <= cur_v:
+            result["reason"] = "up-to-date"
+            return result
+        if status:
+            status("Comparing files")
+        plan = compute_plan(manifest)
+        result["version"] = remote_v
+        if not plan:
+            # Same content, higher version number — just adopt the version.
+            _set_local_version(remote_v)
+            result["reason"] = "already-current"
+            return result
+        result.update(available=True, reason="available", notes=manifest["notes"],
+                      plan=plan, count=len(plan),
+                      bytes=sum(sz for _, _, sz in plan))
+        return result
+
     async def run(self, progress=None, status=None):
-        """Check for and apply an update. Returns a result dict:
+        """Check for and apply an update in one go. Returns a result dict:
             {'updated': bool, 'reason': str, 'version': int, 'count': int}
         Raises OTAError on network/checksum failure (nothing real is modified
         unless 'updated' is True)."""
+        checked = self.check(status)
+        if not checked["available"]:
+            return {"updated": False, "reason": checked["reason"],
+                    "version": checked["version"], "count": 0}
+        return await self.install(checked, progress, status)
+
+    async def install(self, checked, progress=None, status=None):
+        """Apply an update found by check(): download, verify, commit."""
         def _s(msg):
             if status:
                 status(msg)
 
-        _s("Fetching manifest")
-        manifest = self.fetch_manifest()
-        remote_v = manifest["version"]
-        cur_v = local_version()
-        if remote_v <= cur_v:
-            return {"updated": False, "reason": "up-to-date",
-                    "version": cur_v, "count": 0}
-
-        _s("Comparing files")
-        plan = compute_plan(manifest)
-        if not plan:
-            # Same content, higher version number — just adopt the version.
-            _set_local_version(remote_v)
-            return {"updated": False, "reason": "already-current",
-                    "version": remote_v, "count": 0}
-
+        plan = checked["plan"]
+        remote_v = checked["version"]
         total = sum(sz for _, _, sz in plan)
         _rmtree(STAGE_DIR)
         base_done = 0

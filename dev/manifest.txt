@@ -1,5 +1,22 @@
 # OzSec badge OTA manifest
-version 5
+version 6
+note ## Games and chat
+note - New game: Blocks
+note - New: Rock Paper Scissors, vs the bot or another badge
+note - BLAT: chat with badges nearby (Games > BLAT)
+note - Simon and Snake fit the round screen
+note - Game intros show your BEST and LAST score
+note - Game challenges, and the Gamer CTF challenge
+note ## Trading and stamps
+note - Trade from a lobby: see what each badge offers, both must accept
+note - Vendor stamps: hold badges close, the vendor presses STAMP
+note - Collection menu: Chi's, Trade, Stamps
+note ## Badge
+note - Large text now reaches most screens
+note - Badge Mode: Chi, Blinky or Flashlight
+note - Settings grouped into Wireless, Badge, System
+note - Badge-to-badge radio is signed against forgery
+note - Release notes like these before each update
 file d4fa502d9ac671a960105d0b753eec513679b6db8e0101ce8c9859ab41cf18fb 7149 anim.py
 file 4c9638ec7517a8c83839633adb582dbf702c9336e209796e6d4de452ad50cb41 715 badge_id.py
 file f69583723fd742ad3acd08a050569c79aced325073b5db1857071fb6ab5c1c46 8359 badge_radio.py
@@ -28,7 +45,7 @@ file 51af87c96c00522e5bf27fcdaf6f44813049439b571a568e98c561126dab8762 11723 lobb
 file dccba4eacd2e2d0945aca14f893923b22b6e674e11c0e80157bd95b13604d88d 1682 main.py
 file abe9599505ae4231d0c8f69dc3c29e06f61b66db9384fe0ddc73d1b89ecaecd0 6883 menu.py
 file b8209ffda082c821c5d7c75881b84ebfdf4a5e7f5f3726f1ae55a2922a7875c4 3966 open_dyslexic_badge8.py
-file 6ba1b07b8b882444ffec541b1e69a19d71019cdd7cf9361ad3b95b943d475d39 14213 ota.py
+file 398e6d47a3a1788c0a09e4bd4da528bce4e949a48032eb1b1b1e96e146f722ae 16166 ota.py
 file c577314395f8e3a118be760c747ec4a39c890392976fb1d8e69dab81fa7d07b2 5473 peer_manager.py
 file c44e942964c4bab072d57fbbfaa83b1832e91d833e4a9a361eb4156827aa5f70 13862 pet_state.py
 file db5938ff9fcaaba09bc2e9cbbff5d18315b3c85309c49bdd808a0f31dcd328f5 2494 profanity.py
@@ -67,7 +84,7 @@ file ba713bc6c4493da2fb49171e1f44ad6763d074cdb724103ff025430115398368 1843 scree
 file 70c231d96282249d0dc35b7af123b29d8a19146ab1ac7f1f4ca82f8e3111be1a 1223 screens/games_menu.py
 file 3b51202c45a62897fbf658ece9a6e00e3a40ef464be87e53ee6ef442157f6221 10803 screens/lab.py
 file 47ee6d8381adc57e22b1d80be0f79f990654ed9b3ad22c407191c1d1ef70ed8b 9155 screens/lobby.py
-file cd8eed6506202ebff3cb446c1047397173cfe543d7910020acd997ef8b9253c2 11648 screens/ota_update.py
+file 7ac9b11cdf75c448d0b503da46c24843247fe84715bae6439bb722b2259aaad2 16273 screens/ota_update.py
 file f26edc1edbad1c2f86d907b9d4e64a53bc352260de47823eb3dca2333f47caf6 3123 screens/pet_menu.py
 file 64cdafe6af4d46f7f6803eac9fbc82df925330cb43fb95e1d32d83fb3dfba574 10255 screens/rps.py
 file 5e10f80b8616e59e03aa2ff05d2cefa1931ce225ceda6c17dc84bcb154e83a1d 41663 screens/settings.py

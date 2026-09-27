@@ -1,7 +1,11 @@
 """Settings -> System -> Update: manual file-level OTA update screen.
 
-Shows the current OTA version, lets the user START a check, connects WiFi,
-streams changed files (progress bar), verifies sha256, commits, and reboots.
+Shows the current OTA version, lets the user START a check, connects WiFi and
+compares files. When there is an update it shows the new version, the
+download size and the release notes the manifest carries, in a scrolling
+window (LEFT/RIGHT); START installs (streams changed files with a progress
+bar, verifies sha256, commits, reboots) and SELECT cancels. The notes follow
+Settings -> Badge -> Text Size.
 The download runs as an asyncio task so the UI stays responsive; the task only
 mutates instance state, and update() redraws the regions that changed. Progress
 callbacks repaint the bar and percentage alone -- the frame is never cleared
@@ -14,7 +18,7 @@ import time
 
 import theme
 import ui
-from buttons import BOOT, SELECT, START
+from buttons import BOOT, LEFT, RIGHT, SELECT, START
 from screen_manager import Screen
 
 _STATE_IDLE = "idle"
@@ -22,6 +26,7 @@ _STATE_RUNNING = "running"
 _STATE_DONE = "done"
 _STATE_ERROR = "error"
 _STATE_NO_WIFI = "no_wifi"   # needs the user to join a network first
+_STATE_READY = "ready"       # an update was found: notes shown, START installs
 
 _REBOOT_DELAY_MS = 2500
 
@@ -33,6 +38,14 @@ _BAR_H = 16
 _STATUS_Y = 86
 _PCT_Y = _BAR_Y + _BAR_H + 8
 _TEXT_H = 8
+
+# Release notes window (per menu text size: 1 normal, 2 large).
+_NEW_Y = 58
+_SIZE_Y = 74
+_NOTES_Y = 92
+_NOTES_ROWS = {1: 5, 2: 3}
+_NOTES_LINE_H = {1: 16, 2: 22}
+_NOTES_WIDTH = {1: 20, 2: 10}
 
 
 def _radio_active():
@@ -117,6 +130,10 @@ class OTAUpdateScreen(Screen):
         self._last_status = None
         self._last_pct = None
         self._last_fill = None
+        self._updater = None       # kept from the check for the install
+        self._checked = None       # OTAUpdater.check() result
+        self._radio_was_on = None  # Wi-Fi state before the first check
+        self._top = 0              # first release-notes line shown
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -131,9 +148,25 @@ class OTAUpdateScreen(Screen):
             machine.reset()
         self._draw(display)
 
+    async def exit(self, display, leds, mgr):
+        self._release_radio()      # e.g. backing out of the release notes
+
     def handle_button(self, btn, mgr):
         if self._state == _STATE_RUNNING:
             return  # ignore input mid-update (except it can't be cancelled safely)
+        if self._state == _STATE_READY:
+            if btn in (LEFT, RIGHT):
+                rows = _NOTES_ROWS[ui.list_scale()]
+                last = max(0, len(self._note_lines()) - rows)
+                top = self._top + (rows - 1) * (1 if btn == RIGHT else -1)
+                top = max(0, min(last, top))
+                if top != self._top:
+                    self._top = top
+                    self._draw_notes(mgr._display)
+                return
+            if btn == START:
+                self._start_install()
+                return
         if btn in (SELECT, BOOT):
             mgr.pop()
             return
@@ -144,20 +177,51 @@ class OTAUpdateScreen(Screen):
     # ── update task ──────────────────────────────────────────────────────────
 
     def _start(self):
+        """START on the first page: check for an update (nothing installed)."""
         import asyncio
         self._state = _STATE_RUNNING
         self._status = "Starting"
         self._progress = None
         self._result = None
+        self._checked = None
         self._error = ""
         self._reboot_at = None
         self._task = asyncio.create_task(self._run())
+
+    def _start_install(self):
+        """START on the release notes: install what the check found."""
+        import asyncio
+        self._state = _STATE_RUNNING
+        self._status = "Starting"
+        self._progress = None
+        self._task = asyncio.create_task(self._install())
+
+    def _release_radio(self):
+        """Power Wi-Fi down again if it was off before the first check."""
+        if self._radio_was_on is False:
+            _radio_off()
+        self._radio_was_on = None
+
+    def _note_lines(self):
+        """The release notes wrapped for the window, as (text, kind)."""
+        width = _NOTES_WIDTH[ui.list_scale()]
+        out = []
+        for note in (self._checked or {}).get("notes", []):
+            if note.startswith("## "):
+                if out:
+                    out.append(("", "text"))
+                out += [(l, "accent") for l in ui.wrap_text(note[3:].upper(), width)]
+            elif note:
+                out += [(l, "text") for l in ui.wrap_text(note, width)]
+        return out
 
     async def _run(self):
         # Note the radio state before we touch it: an update must not leave
         # Wi-Fi powered up afterwards, draining the battery. Constructing Wifi()
         # itself deactivates the radio, so this has to be sampled first.
-        radio_was_on = _radio_active()
+        if self._radio_was_on is None:
+            self._radio_was_on = _radio_active()
+        keep_radio = False
         try:
             manifest = _manifest_url()
             if not manifest:
@@ -178,25 +242,42 @@ class OTAUpdateScreen(Screen):
                 return
 
             import ota
-            updater = ota.OTAUpdater(manifest)
-            res = await updater.run(progress=self._on_progress,
-                                    status=self._on_status)
-            self._result = res
+            self._updater = ota.OTAUpdater(manifest)
+            checked = self._updater.check(status=self._on_status)
+            if checked["available"]:
+                # Show the notes and wait for START; Wi-Fi stays up meanwhile.
+                self._checked = checked
+                self._top = 0
+                self._state = _STATE_READY
+                keep_radio = True
+                return
+            self._result = {"updated": False, "reason": checked["reason"],
+                            "version": checked["version"], "count": 0}
             self._state = _STATE_DONE
-            if res["updated"]:
-                self._status = "Updated v%d" % res["version"]
-                self._reboot_at = time.ticks_add(time.ticks_ms(), _REBOOT_DELAY_MS)
-            elif res["reason"] == "up-to-date":
-                self._status = "Up to date (v%d)" % res["version"]
+            if checked["reason"] == "up-to-date":
+                self._status = "Up to date (v%d)" % checked["version"]
             else:
-                self._status = "Current (v%d)" % res["version"]
+                self._status = "Current (v%d)" % checked["version"]
         except Exception as e:  # network / checksum / filesystem
             self._fail(str(e) or e.__class__.__name__)
         finally:
             # Only power the radio down if it was off when we started, so a
             # badge the user deliberately left on Wi-Fi stays on.
-            if not radio_was_on:
-                _radio_off()
+            if not keep_radio:
+                self._release_radio()
+
+    async def _install(self):
+        try:
+            res = await self._updater.install(self._checked, progress=self._on_progress,
+                                              status=self._on_status)
+            self._result = res
+            self._state = _STATE_DONE
+            self._status = "Updated v%d" % res["version"]
+            self._reboot_at = time.ticks_add(time.ticks_ms(), _REBOOT_DELAY_MS)
+        except Exception as e:  # network / checksum / filesystem
+            self._fail(str(e) or e.__class__.__name__)
+        finally:
+            self._release_radio()
 
     def _fail(self, msg):
         self._state = _STATE_ERROR
@@ -276,6 +357,15 @@ class OTAUpdateScreen(Screen):
             ui.paragraph(display, "Check for the latest badge software.", 96,
                          kind="text")
             ui.controls(display, "CHECK")
+        elif self._state == _STATE_READY:
+            c = self._checked
+            big = ui.list_scale() == 2
+            ui.status(display, ("NEW v%d" if big else "UPDATE TO v%d") % c["version"],
+                      _NEW_Y, "success", 2 if big else 1)
+            ui.status(display, "%d FILES, %d KB" % (c["count"], (c["bytes"] + 1023) // 1024),
+                      _SIZE_Y + (6 if big else 0), "muted")
+            self._draw_notes(display)
+            ui.controls(display, "INSTALL")
         elif self._state == _STATE_RUNNING:
             ui.status(display, "Do not power off", 168, "muted")
         elif self._state == _STATE_DONE:
@@ -297,6 +387,20 @@ class OTAUpdateScreen(Screen):
                                     ui.wrap_text(self._error)[:3]],
                           112, line_h=16)
             ui.controls(display, "RETRY")
+
+    def _draw_notes(self, display):
+        """The release notes window alone, so scrolling does not blink."""
+        k = ui.list_scale()
+        rows, line_h = _NOTES_ROWS[k], _NOTES_LINE_H[k]
+        y0 = _NOTES_Y + (8 if k == 2 else 0)
+        lines = self._note_lines()
+        ui.clear_band(display, y0 - 2, rows * line_h + 2)
+        if not lines:
+            ui.status(display, "NO RELEASE NOTES", y0 + line_h, "muted")
+            return
+        for i, (text, kind) in enumerate(lines[self._top:self._top + rows]):
+            ui.status(display, text, y0 + i * line_h, kind, k)
+        ui.scrollbar(display, self._top, rows, len(lines), y0, y0 + rows * line_h)
 
     def _draw_status(self, display):
         """Repaint just the status row (cleared first: the text is centred, so
