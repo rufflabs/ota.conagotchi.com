@@ -16,6 +16,7 @@ _KEYED_STATES = ("idle", "cheer", "sad", "chill", "snack", "hydrate", "work")
 
 class Hackachi(Character):
     id          = "hackachi"
+    tag         = "HCK"
     name        = "Hackachi"
     rarity      = RARITY_NORMAL
     level_color = (100, 220, 180)   # mint teal

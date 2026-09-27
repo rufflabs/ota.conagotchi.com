@@ -9,6 +9,7 @@ scrolling titles and rows, message line and controls all come from there.
                         Wireless: Wi-Fi, Bluetooth, IR
                         Badge: Badge Mode, Theme, Keyboard, Text Size
                         System: Update, Factory Reset
+    BadgeModeScreen     pick Chi, Blinky or Flashlight
     WifiScreen          radio, scan, connect, net check, SSID/password, ...
     CreditsScreen       BOOT x5 here unlocks Debug
     DebugScreen         the top level, and each group (Chi's, Reset, ...)
@@ -48,12 +49,16 @@ _SETTINGS_GROUPS = {
 
 # How each badge mode is shown (the saved value is unchanged).
 _MODE_LABELS = {"conagotchi": "CHI", "blinky": "BLINKY"}
+# The Badge Mode picker: (row label, key). Flashlight is a choice, never a
+# saved mode, so a reboot cannot come back up with every LED at full white.
+_MODE_CHOICES = (("Chi", "conagotchi"), ("Blinky", "blinky"),
+                 ("Flashlight", "flashlight"))
 
 _DEBUG_UNLOCK_PRESSES = 5   # BOOT presses in Credits to unlock the Debug menu
 _FLASH_MS = 900             # how long the "DEBUG" unlock dialog stays on screen
 
 # Debug menu: top-level rows, some of which open a group of related items.
-# "Disable Debug Menu" is last so a stray START on entering cannot hit it.
+# "Debug Off" is last so a stray START on entering cannot hit it.
 _DEBUG_TOP = ("chis", "reset", "hardware", "system", "vendor", "enable")
 _DEBUG_GROUPS = {
     # key: (row label, page title, items)
@@ -171,7 +176,7 @@ class SettingsScreen(_SettingsList):
             self.message = "IR TRADES " + _on_off(s.ir_enabled)
             self.redraw(mgr)
         elif key == "badge_mode":
-            self._toggle_badge_mode(mgr)
+            mgr.push(BadgeModeScreen(s, self))
         elif key == "keyboard":
             from settings_state import KEYBOARDS
             cur = s.keyboard
@@ -200,26 +205,46 @@ class SettingsScreen(_SettingsList):
         elif key == "reset":
             mgr.push(FactoryResetScreen())
 
-    def _toggle_badge_mode(self, mgr) -> None:
-        """Cycle the badge mode. Choosing Blinky enters it straight away.
+class BadgeModeScreen(ListScreen):
+    """Choose Chi, Blinky or Flashlight. Chi goes back to Badge with the new
+    mode shown; Blinky and Flashlight replace the whole UI (switch_to), and
+    each returns to the pet when a button leaves it."""
 
-        Blinky replaces the whole UI rather than sitting on the stack, so this
-        uses switch_to; BlinkyScreen clears the saved mode on exit so a badge
-        cannot get stuck in it across reboots."""
-        from settings_state import BADGE_MODES, MODE_BLINKY
+    title = "BADGE MODE"
+
+    def __init__(self, settings, parent=None) -> None:
+        super().__init__()
+        self.settings = settings
+        self.parent = parent
+        keys = [key for _, key in _MODE_CHOICES]
+        mode = settings.badge_mode
+        self.menu.sel = keys.index(mode) if mode in keys else 0
+
+    def rows(self):
+        mode = self.settings.badge_mode
+        return [(label, "ACTIVE" if key == mode else None, key)
+                for label, key in _MODE_CHOICES]
+
+    def confirm(self):
+        return "SET"
+
+    def activate(self, mgr) -> None:
+        from settings_state import MODE_BLINKY, MODE_CONAGOTCHI
+        key = self.menu.key
         s = self.settings
-        try:
-            nxt = BADGE_MODES[(BADGE_MODES.index(s.badge_mode) + 1) % len(BADGE_MODES)]
-        except ValueError:
-            nxt = BADGE_MODES[0]
-        s.badge_mode = nxt
+        # Flashlight saves Chi: that is where it returns, and where a reboot lands.
+        s.badge_mode = MODE_BLINKY if key == "blinky" else MODE_CONAGOTCHI
         s.save()
-        if nxt == MODE_BLINKY:
+        if key == "blinky":
             from screens.blinky import BlinkyScreen
             mgr.switch_to(BlinkyScreen())
-            return
-        self.message = "MODE " + _MODE_LABELS.get(nxt, nxt.upper())
-        self.redraw(mgr)
+        elif key == "flashlight":
+            from screens.flashlight import FlashlightScreen
+            mgr.switch_to(FlashlightScreen())
+        else:
+            if self.parent is not None:
+                self.parent.message = "MODE " + _MODE_LABELS[s.badge_mode]
+            mgr.pop()
 
 
 # ── Wi-Fi ────────────────────────────────────────────────────────────────────
@@ -455,7 +480,7 @@ class DebugScreen(_SettingsList):
             mgr.push(DebugScreen(s, key, self.root))
             return
         if key == "enable":
-            # Disable Debug Menu: hide it again (Credits -> BOOT x5 brings it
+            # Debug Off: hide the menu again (Credits -> BOOT x5 brings it
             # back) and leave it.
             s.debug_enabled = False
             s.save()
@@ -969,7 +994,7 @@ def _debug_item(key: str, settings: BadgeSettings, pet: PetState):
     if key in _DEBUG_GROUPS:
         return (_DEBUG_GROUPS[key][0], "VIEW", key)
     labels = {
-        "enable": ("Disable Debug Menu", None),
+        "enable": ("Debug Off", None),
         "vendor": ("Vendor Mode", _on_off(settings.vendor_mode_enabled)),
         "level": ("Level", str(int(pet.level))),
         "exp": ("EXP", str(int(pet.total_experience))),
@@ -1059,10 +1084,18 @@ def _resource_value_fg(value: str) -> int:
 
 def _draw_credits_page(display, marquee=None) -> None:
     ui.screen(display, "CREDITS", marquee=marquee)
-    ui.text_lines(display, ("OzSec 2026", ("Conagotchi", "muted")), 56, line_h=20)
-    ui.text_lines(display, ("Contributors:", ("rufflabs", "muted"),
-                            ("baum", "muted"), ("Claude and Codex", "muted")),
-                  108, line_h=20)
+    if ui.list_scale() == 2:
+        # Large text: tighter lines, and the last name split to fit the glass.
+        ui.text_lines(display, ("OzSec 2026", ("Conagotchi", "muted")), 44,
+                      line_h=18, scale=2)
+        ui.text_lines(display, ("Contributors:", ("rufflabs", "muted"),
+                                ("baum", "muted"), ("Claude and", "muted"),
+                                ("Codex", "muted")), 88, line_h=18, scale=2)
+    else:
+        ui.text_lines(display, ("OzSec 2026", ("Conagotchi", "muted")), 56, line_h=20)
+        ui.text_lines(display, ("Contributors:", ("rufflabs", "muted"),
+                                ("baum", "muted"), ("Claude and Codex", "muted")),
+                      108, line_h=20)
     ui.controls(display)
 
 

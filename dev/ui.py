@@ -55,21 +55,21 @@ def clear(display):
     display.fill(_t().bg)
 
 
-def fit_chars(y):
-    """How many 8px characters fit inside the round bezel on the row at `y`.
+def fit_chars(y, scale=1):
+    """How many characters fit inside the round bezel on the row at `y`.
 
     The display is a 240x240 circle, so a row's usable width depends on how far
-    it is from the centre. Text drawn with draw_text occupies y..y+7, and the
-    worse of those two edges decides the budget. Capped at 20, which is the
-    widest any row should be.
+    it is from the centre. Text drawn with draw_text occupies y..y+7 (y+15 at
+    2x), and the worse of those two edges decides the budget. Capped at 20,
+    which is the widest any row should be.
     """
     worst = 0.0
-    for edge in (y, y + 7):
+    for edge in (y, y + 8 * scale - 1):
         worst = max(worst, abs(119.5 - edge))
     if worst >= 114:
         return 0
     half = (114.0 * 114.0 - worst * worst) ** 0.5
-    return max(1, min(20, int(half * 2) // 8))
+    return max(1, min(20, int(half * 2) // (8 * scale)))
 
 
 # The Settings screen's title chrome, which is the badge standard: a filled
@@ -233,8 +233,9 @@ def controls(display, confirm=None):
 
 # ── List text size ──────────────────────────────────────────────────────────
 # Menu rows can be drawn at 2x (Settings -> Badge -> Text Size). Only list rows
-# and their headings change; titles, controls and body text keep their size,
-# and right-hand values stay at normal size. Large rows are taller, so fewer fit.
+# and their headings change, as does the Credits page; titles, controls, body
+# text and right-hand values stay at normal size. Large rows are taller, so
+# fewer fit.
 _LIST_SCALE = 1
 _LARGE_ROWS = (54, 34, 3)     # row_top, row_h, rows_visible at 2x
 
@@ -321,7 +322,7 @@ def label_width(value=None, scale=None):
 
 
 def row(display, y, label, value=None, selected=False, value_fg=None, fill=None,
-        scroll=0, scale=None, clear=False):
+        scroll=0, scale=None, clear=False, highlight=False):
     """One list row whose top is `y`, in the theme's style and the menu text
     size (`scale` overrides it; the button test keeps its rows normal size).
 
@@ -329,6 +330,10 @@ def row(display, y, label, value=None, selected=False, value_fg=None, fill=None,
     list_view cannot express, e.g. several rows lit at once (the button test).
     fill   — a theme colour name to highlight the row with instead of the
              selection colour; its text is drawn in the background colour.
+    highlight — a row that needs attention (e.g. a lobby request): drawn in
+             the theme's hl_fg on hl_bg, a filled bar where hl_bg differs from
+             the background. Selected, it keeps the theme's selection bar
+             (fill-select themes), its text in the highlight colour.
     scroll — for a label too long for the row: the selected row shows a window
              starting `scroll` characters in; unselected rows are clipped.
     """
@@ -343,6 +348,16 @@ def row(display, y, label, value=None, selected=False, value_fg=None, fill=None,
     # Narrowed on the outer rows so the bar's corners stay on the glass. The
     # bar never reaches the scrollbar arc, so a row can repaint just this box.
     w = box_width(y - 2, row_h, 240 - 2 * th.row_pad_x)
+    hl_fg = None                  # the highlight's text colour, when highlighted
+    if highlight and fill is None:
+        barred = th.hl_bg != th.bg
+        if selected and not marker:
+            fill = "sel"          # keep showing where the selection is
+            hl_fg = th.hl_bg if barred else th.hl_fg
+        else:
+            fill = "hl_bg" if barred else None
+            hl_fg = th.hl_fg
+        lit = selected or fill is not None
     if lit and (not marker or fill is not None):
         row_bg = getattr(th, fill) if fill else th.sel
         display.fill_rect((240 - w) // 2, y - 2, w, row_h, row_bg)
@@ -358,7 +373,9 @@ def row(display, y, label, value=None, selected=False, value_fg=None, fill=None,
     width = max(1, avail - (len(prefix) if scale == 1 else len(prefix) // 2))
     if len(label) > width:
         label = scroll_window(label, scroll, width) if selected else clip(label, width)
-    if fill:
+    if hl_fg is not None:
+        fg = hl_fg
+    elif fill:
         fg = th.bg
     else:
         fg = (th.accent if selected else th.text) if marker else th.text
@@ -371,7 +388,10 @@ def row(display, y, label, value=None, selected=False, value_fg=None, fill=None,
             x += len(prefix) * _CHAR_W
         draw_text(display, label, x, label_y, fg, row_bg, scale)
     if value is not None:
-        vfg = th.bg if fill else (value_fg or state_color)(value)
+        if hl_fg is not None:
+            vfg = hl_fg
+        else:
+            vfg = th.bg if fill else (value_fg or state_color)(value)
         draw_text(display, value, vx, value_y, vfg, row_bg)
 
 
@@ -437,7 +457,11 @@ def list_view(display, items, sel, top, value_fg=None, marquee=None, only=None,
 
     items    — full list; each item is either a label string or a
                (label, value) tuple (value is drawn right-aligned).  Extra tuple
-               fields are ignored, so (label, value, action) rows work too.
+               fields are ignored, so (label, value, action) rows work too; a
+               fourth field naming a theme colour ("success", "accent", ...)
+               colours that row's value, overriding value_fg; "highlight"
+               draws the whole row in the theme's highlight colours (see
+               row), for rows that need attention such as a lobby request.
     sel      — selected index; top — first visible index (caller owns scroll).
     value_fg — optional value -> color fn; defaults to state_color (ON green,
                OFF red, else muted).
@@ -478,14 +502,25 @@ def list_view(display, items, sel, top, value_fg=None, marquee=None, only=None,
                             th.text, th.heading, scale)
             continue
         label, value = (item[0], item[1]) if isinstance(item, tuple) else (item, None)
+        fg, highlight = value_fg, False
+        if isinstance(item, tuple) and len(item) > 3 and isinstance(item[3], str):
+            if item[3] == "highlight":
+                highlight = True          # the theme's hl_fg on hl_bg
+            elif hasattr(th, item[3]):
+                fg = _colour_fn(getattr(th, item[3]))
         scroll = 0
         if marquee is not None and i == sel:
             prefix = (2 if scale == 1 else 1) if marker else 0
             scroll = marquee.use(label, label_width(value) - prefix)
-        row(display, y, label, value, i == sel, value_fg, scroll=scroll, clear=clear)
+        row(display, y, label, value, i == sel, fg, scroll=scroll, clear=clear,
+            highlight=highlight)
     if only is None:
         scrollbar(display, top, visible, len(items), row_top - 2,
                   row_top - 2 + visible * row_h)
+
+
+def _colour_fn(colour):
+    return lambda value: colour
 
 
 def repaint_list(display, items, sel, top, old_sel, old_top, value_fg=None,
@@ -624,14 +659,14 @@ def text_page(display, lines, top, y=PAGE_Y, visible=PAGE_ROWS,
     status(display, "%d/%d" % (top + 1, pages), _PAGE_COUNT_Y, "muted")
 
 
-def text_lines(display, lines, y, line_h=18):
+def text_lines(display, lines, y, line_h=18, scale=1):
     """Centred lines from `y` down, each clipped to the bezel at its own row.
 
     lines — strings (drawn as text) or (string, kind) with a theme colour name.
     Returns the y just below the last line."""
     for line in lines:
         label, kind = line if isinstance(line, tuple) else (line, "text")
-        status(display, label, y, kind)
+        status(display, label, y, kind, scale)
         y += line_h
     return y
 
@@ -640,6 +675,55 @@ def paragraph(display, text, y, kind="muted", line_h=18, width=20):
     """Word-wrap `text` and draw it centred from `y`. Returns the next y."""
     return text_lines(display, [(l, kind) for l in wrap_text(text, width)],
                       y, line_h)
+
+
+INTRO_Y = 46       # game_intro: first line, just under the title panel
+_INTRO_LINE_H = 18
+
+
+def game_intro(display, title, lines, large_lines=None, best=0, last=None):
+    """The page every game opens on: how to play, the player's scores, and
+    START TO PLAY in the bottom strip.
+
+    Follows the menu text size: in large mode `large_lines` (shorter, since
+    fewer characters fit at 2x) are drawn at 2x; `lines` otherwise.
+    lines  — text_lines rows: strings or (string, kind); "" is a half-line gap.
+    best   — the saved high score; last — the latest run's score (None when
+             there is none). A player with neither sees NO SCORE YET.
+    """
+    scale = _LIST_SCALE
+    rows = list(large_lines if scale == 2 and large_lines else lines)
+    if best or last is not None:
+        if scale == 2:
+            rows.append(("BEST %d" % best, "accent"))
+            if last is not None:
+                rows.append(("LAST %d" % last, "muted"))
+        else:
+            text = "BEST %d" % best
+            if last is not None:
+                text += "  LAST %d" % last
+            rows += ["", (text, "accent")]
+    else:
+        rows += ["", ("NO SCORE" if scale == 2 else "NO SCORE YET", "muted")]
+    screen(display, title)
+    scaled_lines(display, rows)
+    bottom_line(display, "START TO PLAY")
+
+
+def scaled_lines(display, rows, y=INTRO_Y):
+    """Centred lines from `y` at the menu text size (2x in large mode), each
+    clipped to the bezel. rows: strings or (string, kind); "" is a half-line
+    gap. Returns the y below the last line. Pages that follow Text Size pass
+    shorter rows in large mode, since fewer characters fit."""
+    scale = _LIST_SCALE
+    for row in rows:
+        if row == "":
+            y += _INTRO_LINE_H // 2
+            continue
+        label, kind = row if isinstance(row, tuple) else (row, "text")
+        status(display, label, y, kind, scale)
+        y += _INTRO_LINE_H
+    return y
 
 
 MESSAGE_Y = 178    # below the list rows of every theme, above the control strip
@@ -794,17 +878,18 @@ def progress_bar(display, y, pct, h=8, w=180, kind="accent", prev=None,
     return fill
 
 
-def meter_list(display, rows, sel, y=48, row_h=36):
+def meter_list(display, rows, sel, y=48, row_h=36, scale=1):
     """Stacked meters: each row a label, a value and a bar beneath.
 
     rows — (label, pct, kind) or (label, pct, kind, value): kind is the bar's
            theme colour name; value is the right-hand text (default "NN%").
     sel  — index of the boxed row, or None for no selection.
+    scale — 2 draws the label at 2x (large text); the value stays normal size.
     Every row gets the width of the narrowest one that fits the bezel, so
     the bars line up.
     """
     th = _t()
-    box_h = 26
+    box_h = 26 if scale == 1 else 30
     w = 200
     for i in range(len(rows)):
         w = min(w, box_width(y + i * row_h - 6, box_h, 200))
@@ -823,27 +908,37 @@ def meter_list(display, rows, sel, y=48, row_h=36):
         # Both texts are padded to fixed widths, so redrawing a row in place
         # overwrites the previous text completely (see refresh-in-place below).
         value = " " * max(0, 6 - len(value)) + value
-        label_w = chars - len(value) - 1
+        if scale == 1:
+            label_w = chars - len(value) - 1
+            label = clip(label, label_w)
+            draw_text(display, label + " " * (label_w - len(label)), x + 12, ry,
+                      th.text, bg)
+            draw_text(display, value, x + w - 12 - len(value) * _CHAR_W, ry,
+                      th.muted, bg)
+            progress_bar(display, ry + 11, pct, h=6, w=w - 24, kind=kind, frame=True)
+            continue
+        label_w = max(1, (w - 24 - (len(value) + 1) * _CHAR_W) // (_CHAR_W * 2))
         label = clip(label, label_w)
-        draw_text(display, label + " " * (label_w - len(label)), x + 12, ry,
-                  th.text, bg)
-        draw_text(display, value, x + w - 12 - len(value) * _CHAR_W, ry,
+        draw_text(display, label + " " * (label_w - len(label)), x + 12, ry - 4,
+                  th.text, bg, 2)
+        draw_text(display, value, x + w - 12 - len(value) * _CHAR_W, ry + 2,
                   th.muted, bg)
-        progress_bar(display, ry + 11, pct, h=6, w=w - 24, kind=kind, frame=True)
+        progress_bar(display, ry + 15, pct, h=6, w=w - 24, kind=kind, frame=True)
 
 
-def status_row(display, s, y, kind="text"):
+def status_row(display, s, y, kind="text", scale=1):
     """A status line that can be redrawn in place without flicker: the text is
     centred inside a full-width row of spaces, so it overwrites whatever the
-    row held before. Use it for lines that change while a screen is open."""
-    width = fit_chars(y)
+    row held before. Use it for lines that change while a screen is open.
+    scale 2 draws it at 2x (pass ui.list_scale() to follow Text Size)."""
+    width = fit_chars(y, scale)
     s = clip(s, width)
     left = (width - len(s)) // 2
-    status(display, " " * left + s + " " * (width - len(s) - left), y, kind)
+    status(display, " " * left + s + " " * (width - len(s) - left), y, kind, scale)
 
 
 def meters_in_place(display, rows, prev_keys, y, row_h, empty=None, empty_y=None,
-                    top=None, bottom=None):
+                    top=None, bottom=None, scale=1):
     """Refresh a meter_list that changes while a screen is open, without
     flashing it. Rows are (key, pct, kind, value); when the keys (and so the
     layout) are unchanged the rows are simply redrawn over themselves; only a
@@ -853,9 +948,9 @@ def meters_in_place(display, rows, prev_keys, y, row_h, empty=None, empty_y=None
     if keys != prev_keys:
         clear_band(display, top, bottom - top)
         if not rows and empty:
-            status(display, empty, empty_y, "muted")
+            status(display, empty, empty_y, "muted", scale)
     if rows:
-        meter_list(display, rows, None, y, row_h)
+        meter_list(display, rows, None, y, row_h, scale)
     return keys
 
 
@@ -867,11 +962,11 @@ def clear_band(display, y, h):
 
 # ── Status ──────────────────────────────────────────────────────────────────
 
-def status(display, s, y, kind="text"):
+def status(display, s, y, kind="text", scale=1):
     """Centred status text coloured by semantic kind, clipped to the bezel.
 
     kind — one of the theme color tokens: success / warning / danger / accent /
     muted / text.
     """
     color = getattr(_t(), kind, _t().text)
-    center_text(display, clip(s, fit_chars(y)), y, color, _t().bg)
+    center_text(display, clip(s, fit_chars(y, scale)), y, color, _t().bg, scale)

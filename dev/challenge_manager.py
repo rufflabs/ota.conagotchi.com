@@ -54,9 +54,11 @@ def is_completed(challenge_id: str) -> bool:
 
 
 def get_completed_flag(challenge_id: str):
-    """Reveal only a registered, available quest's locally earned flag."""
+    """Reveal only a registered, available CTF quest's locally earned flag.
+    A badge-only challenge (is_ctf False) never shows one, even if the table
+    happens to have a row for it."""
     cls = next((c for c in CHALLENGES if c.id == challenge_id), None)
-    if cls is None or not is_completed(challenge_id):
+    if cls is None or not getattr(cls, "is_ctf", False) or not is_completed(challenge_id):
         return None
     if cls.character:
         import character_manager
@@ -79,11 +81,14 @@ def mark_complete(challenge_id: str) -> None:
 # ── Internal ──────────────────────────────────────────────────────────────────
 
 def reset_progress() -> int:
-    """Forget every challenge's progress (debug): completions, lab progress and
-    the trade history the trade quests are measured from. Stamps, characters
-    and pet state are untouched. Returns the number of files removed."""
+    """Forget every challenge's progress (debug): completions, lab progress,
+    and the trade history and game stats the quests are measured from.
+    Stamps, characters and pet state are untouched. Returns the number of
+    files removed."""
     import os
+    import game_scores
     import peer_manager
+    game_scores.clear()        # its file and its in-memory copy
     paths = [_STATE_FILE, peer_manager._PEER_FILE, peer_manager._FLAG_FILE,
              peer_manager._TRADE_FILE]
     try:

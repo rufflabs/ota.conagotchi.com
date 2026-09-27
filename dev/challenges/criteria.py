@@ -94,3 +94,99 @@ class ConnectWifiChallenge(Challenge):
             return bool(network.WLAN(network.STA_IF).isconnected())
         except Exception:
             return False
+
+
+# ── Games (game_scores) ──────────────────────────────────────────────────────
+
+class PlayGameChallenge(Challenge):
+    """Met once `game` has been played `target` times (a run started)."""
+    game = ""
+    target = 1
+
+    @classmethod
+    def is_met(cls) -> bool:
+        import game_scores
+        return game_scores.get(cls.game, "plays") >= cls.target
+
+    @classmethod
+    def progress(cls):
+        if cls.target <= 1:
+            return None
+        import game_scores
+        return (min(game_scores.get(cls.game, "plays"), cls.target), cls.target)
+
+
+class GameScoreChallenge(Challenge):
+    """Met once `game`'s saved record for `key` reaches `target` (multi-step).
+
+    The score is whatever the game records: rounds cleared in Simon, food
+    eaten in Snake."""
+    game = ""
+    key = "best"
+    target = 10
+
+    @classmethod
+    def is_met(cls) -> bool:
+        import game_scores
+        return game_scores.get(cls.game, cls.key) >= cls.target
+
+    @classmethod
+    def progress(cls):
+        import game_scores
+        return (min(game_scores.get(cls.game, cls.key), cls.target), cls.target)
+
+
+class BeatHighScoreChallenge(Challenge):
+    """Met once any game's run has beaten that game's earlier high score. A
+    first score is not a beaten one, so this needs at least two runs."""
+    target = 1
+
+    @classmethod
+    def is_met(cls) -> bool:
+        import game_scores
+        return game_scores.total("beaten") >= cls.target
+
+
+class PlayAnyGameChallenge(Challenge):
+    """Met once any game has been played `target` times in total."""
+    target = 1
+
+    @classmethod
+    def is_met(cls) -> bool:
+        import game_scores
+        return game_scores.total("plays") >= cls.target
+
+
+# ── Meta ─────────────────────────────────────────────────────────────────────
+
+class MetaChallenge(Challenge):
+    """Met once other challenges are complete: every id in `requires`, and at
+    least one id in `requires_any` when that is set.
+
+    The usual shape is a CTF meta challenge (is_ctf = True) over badge-only
+    parts: the parts give no flag, and this one gives the flag once they are
+    all done. List it after its parts in the registry, so a sweep that
+    completes the last part completes this too."""
+    requires = ()
+    requires_any = ()
+
+    @classmethod
+    def is_met(cls) -> bool:
+        import challenge_manager
+        done = challenge_manager.is_completed
+        if not all(done(cid) for cid in cls.requires):
+            return False
+        return not cls.requires_any or any(done(cid) for cid in cls.requires_any)
+
+    @classmethod
+    def progress(cls):
+        import challenge_manager
+        parts = list(cls.requires) + ([cls.requires_any] if cls.requires_any else [])
+        if len(parts) < 2:
+            return None
+        done = 0
+        for part in parts:
+            ids = part if isinstance(part, tuple) else (part,)
+            if any(challenge_manager.is_completed(cid) for cid in ids):
+                done += 1
+        return (done, len(parts))

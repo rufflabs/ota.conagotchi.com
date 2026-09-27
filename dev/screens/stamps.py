@@ -189,8 +189,12 @@ class _LiveScreen(Screen):
         self._frame = self._state()
         ui.screen(display, self.title, marquee=self._title)
         if self._session is None:
-            ui.paragraph(display, BT_HINT if not _bluetooth_on() else "BLUETOOTH N/A",
-                         92, kind="warning")
+            text = BT_HINT if not _bluetooth_on() else "BLUETOOTH N/A"
+            if ui.list_scale() == 2:
+                ui.scaled_lines(display, [(line, "warning")
+                                          for line in ui.wrap_text(text.upper(), 10)])
+            else:
+                ui.paragraph(display, text, 92, kind="warning")
         else:
             self._draw_static(display)
             self._reset_live()
@@ -208,20 +212,25 @@ class _LiveScreen(Screen):
 
 
 class CollectScreen(_LiveScreen):
-    """Listen for vendors and collect their stamps."""
+    """Listen for vendors and collect their stamps. Follows Text Size: in
+    large mode the text is 2x, two vendors fit, and the prompt is shorter."""
 
     title = "COLLECT"
-    _NEAR_Y = 84
-    _NEAR_H = 28
+    _NEAR_Y = {1: 84, 2: 88}
+    _NEAR_H = {1: 28, 2: 36}
+    _NEAR_ROWS = {1: 3, 2: 2}
+    _NEAR_TOP = {1: 72, 2: 70}
+    _NEAR_BOTTOM = {1: 162, 2: 162}
+    _STATUS_Y = {1: 170, 2: 170}
 
     def _make(self):
         from stamp_session import StampCollector
         return StampCollector()
 
     def _near_rows(self):
-        from screens.trade import _meter
+        rows = self._NEAR_ROWS[ui.list_scale()]
         return [_meter((vid, rssi, "BT"), _stamp_rssi_min())
-                for vid, rssi in self._session.nearby()[:3]]
+                for vid, rssi in self._session.nearby()[:rows]]
 
     def _state(self):
         s = self._session
@@ -237,22 +246,26 @@ class CollectScreen(_LiveScreen):
     def _paint(self, display) -> None:
         import stamp_manager
         s = self._session
-        ui.status_row(display, "%d STAMPS" % stamp_manager.count(), 44, "muted")
+        k = ui.list_scale()
+        ui.status_row(display, "%d STAMPS" % stamp_manager.count(), 44, "muted", k)
         self._near_keys = ui.meters_in_place(
-            display, self._near_rows(), self._near_keys, self._NEAR_Y, self._NEAR_H,
-            empty="NO VENDORS NEARBY", empty_y=110, top=72, bottom=162)
+            display, self._near_rows(), self._near_keys, self._NEAR_Y[k],
+            self._NEAR_H[k], empty="NO VENDORS NEARBY" if k == 1 else "NO VENDORS",
+            empty_y=110, top=self._NEAR_TOP[k], bottom=self._NEAR_BOTTOM[k], scale=k)
         near = s.nearby()
+        # (normal text, large text, colour); large lines fit 10 characters.
         if s.last is None and near:
             if near[0][1] >= _stamp_rssi_min():
-                ui.status_row(display, "HOLD STILL...", 170, "accent")
+                line = ("HOLD STILL...", "HOLD STILL", "accent")
             else:
-                ui.status_row(display, "MOVE CLOSER", 170, "warning")
+                line = ("MOVE CLOSER", "GET CLOSER", "warning")
         elif s.last is None:
-            ui.status_row(display, "LISTENING...", 170, "muted")
+            line = ("LISTENING...", "LISTENING", "muted")
         elif s.last[1]:
-            ui.status_row(display, "GOT " + s.last[0] + "!", 170, "success")
+            line = ("GOT " + s.last[0] + "!",) * 2 + ("success",)
         else:
-            ui.status_row(display, "HAVE " + s.last[0], 170, "muted")
+            line = ("HAVE " + s.last[0],) * 2 + ("muted",)
+        ui.status_row(display, line[k - 1], self._STATUS_Y[k], line[2], k)
 
 
 class StampingScreen(_LiveScreen):
@@ -283,21 +296,34 @@ class StampingScreen(_LiveScreen):
         return (s.total, s.window_left(), s.result, len(s.nearby()))
 
     def _draw_static(self, display) -> None:
-        ui.card(display, (("VENDOR ID", "muted"), (self._vendor_id, "text")))
+        if ui.list_scale() == 2:
+            ui.scaled_lines(display, (("VENDOR", "muted"), (self._vendor_id, "accent")))
+        else:
+            ui.card(display, (("VENDOR ID", "muted"), (self._vendor_id, "text")))
 
     def _paint(self, display) -> None:
         s = self._session
+        k = ui.list_scale()
+        # (normal text, large text); large lines fit about 12 characters here.
         if s.stamping():
-            line, kind = "STAMPING %ds" % s.window_left(), "success"
+            line, kind = ("STAMPING %ds" % s.window_left(),
+                          "STAMP %ds" % s.window_left()), "success"
         elif s.result is None:
-            line, kind = "START TO STAMP", "muted"
+            line, kind = ("START TO STAMP", "PRESS STAMP"), "muted"
         elif not s.result[0]:
-            line, kind = "NO BADGE - TRY AGAIN", "warning"
+            line, kind = ("NO BADGE - TRY AGAIN", "NO BADGE"), "warning"
         elif s.result[1]:
-            line, kind = "STAMPED " + _short(s.result[0]), "success"
+            line, kind = ("STAMPED " + _short(s.result[0]),) * 2, "success"
         else:
-            line, kind = "ALREADY HAD " + _short(s.result[0]), "muted"
-        ui.status_row(display, line, 146, kind)
+            line, kind = ("ALREADY HAD " + _short(s.result[0]),
+                          "HAD " + _short(s.result[0])), "muted"
+        if k == 2:
+            ui.status_row(display, line[1], 100, kind, 2)
+            ui.status_row(display, "TOTAL %d" % s.total, 126, "muted", 2)
+            ui.status_row(display, "+%d NEW" % s.session_count, 146, "muted", 2)
+            ui.status_row(display, "NEAR %d" % len(s.nearby()), 166, "muted", 2)
+            return
+        ui.status_row(display, line[0], 146, kind)
         ui.status_row(display, "TOTAL %d  (+%d)" % (s.total, s.session_count), 162,
                       "muted")
         ui.status_row(display, "NEARBY: %d" % len(s.nearby()), 178, "muted")
@@ -306,6 +332,26 @@ class StampingScreen(_LiveScreen):
         super()._draw(display)
         if self._session is not None:
             ui.controls(display, "STAMP")
+
+
+# Bluetooth signal shown as a bar: this range maps to empty..full.
+_RSSI_FLOOR = -95
+_RSSI_FULL = -45
+
+
+def _meter(row, rssi_min):
+    """A nearby vendor as a meter row: bar and colour from its signal."""
+    badge, rssi, via = row
+    if rssi is None:                           # no signal strength reported
+        return (badge, 100, "success", via)
+    pct = (rssi - _RSSI_FLOOR) * 100 // (_RSSI_FULL - _RSSI_FLOOR)
+    if rssi >= rssi_min:
+        kind = "success"                       # close enough to collect
+    elif rssi >= rssi_min - 15:
+        kind = "warning"
+    else:
+        kind = "danger"
+    return (badge, pct, kind, "%ddB" % rssi)
 
 
 def _stamp_rssi_min():

@@ -3,6 +3,7 @@ from characters.base import Character, RARITY_NORMAL
 
 class Overseechi(Character):
     id          = "overseechi"
+    tag         = "OVR"
     name        = "Overseechi"
     rarity      = RARITY_NORMAL
     level_color = (245, 95, 120)

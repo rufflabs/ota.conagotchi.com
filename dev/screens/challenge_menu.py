@@ -143,7 +143,7 @@ class ChallengeDetailScreen(Screen):
             self._lines = ui.wrap_text(flag)
         else:
             self._lines = ui.wrap(cls.description, 24)
-            if getattr(cls, "interactive", False) and challenge_manager.is_completed(cls.id):
+            if getattr(cls, "is_ctf", False) and challenge_manager.is_completed(cls.id):
                 self._lines = ["Flag not configured."]
         self._scroll = min(self._scroll, ui.scroll_max(len(self._lines), self._VISIBLE))
         ui.text_view(display, self._lines, self._scroll, 84, self._VISIBLE)

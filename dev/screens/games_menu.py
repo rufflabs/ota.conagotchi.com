@@ -6,6 +6,9 @@ from menu import ListScreen
 _GAME_ITEMS = (
     ("Simon", "simon"),
     ("Snake", "snake"),
+    ("Blocks", "blocks"),
+    ("Rock Paper Scissors", "rps"),
+    ("BLAT", "blat"),                 # chat; here until it has a better home
 )
 
 
@@ -29,3 +32,12 @@ class GamesMenuScreen(ListScreen):
         elif key == "snake":
             from screens.snake import SnakeScreen
             mgr.push(SnakeScreen())
+        elif key == "blocks":
+            from screens.blocks import BlocksScreen
+            mgr.push(BlocksScreen())
+        elif key == "rps":
+            from screens.rps import RpsModeScreen
+            mgr.push(RpsModeScreen())
+        elif key == "blat":
+            from screens.blat import BlatScreen
+            mgr.push(BlatScreen())

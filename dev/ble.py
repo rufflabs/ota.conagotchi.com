@@ -15,7 +15,9 @@ Advertisement layout (one AD structure, whole 31-byte budget ours):
      |    manufacturer-specific AD type
      total bytes after this length byte
 
-Char body:  [kind=1][clen][char_id ascii][blen][badge_id ascii]
+Char body:  [kind=1][clen][char_id ascii][ everything after the second ':' ]
+            (the badge id, then badge_radio's signature bytes when signed; no
+            length byte, so a signed offer for a 10-letter Chi fits exactly)
 Stamp body: [kind=2][ stamp text bytes ]   (round-tripped verbatim)
 Raw body:   [kind=0][ payload bytes ]      (fallback for anything else)
 
@@ -52,11 +54,8 @@ def encode_adv(payload: bytes):
     """Compact a trade payload into a full adv_data buffer, or None if it will
     not fit in a legacy advertisement."""
     if payload.startswith(_PREFIX_CHAR):
-        rest = payload[len(_PREFIX_CHAR):]
-        parts = rest.split(b":")
-        char = parts[0]
-        badge = parts[1] if len(parts) > 1 else b""
-        body = bytes([_KIND_CHAR]) + _lp(char) + _lp(badge)
+        char, _, rest = payload[len(_PREFIX_CHAR):].partition(b":")
+        body = bytes([_KIND_CHAR]) + _lp(char) + rest
     elif payload.startswith(_PREFIX_STAMP):
         body = bytes([_KIND_STAMP]) + payload[len(_PREFIX_STAMP):]
     else:
@@ -126,15 +125,10 @@ def _decode_body(data: bytes):
     kind = data[0]
     p = data[1:]
     if kind == _KIND_CHAR:
-        try:
-            cl = p[0]
-            char = p[1:1 + cl]
-            q = p[1 + cl:]
-            bl = q[0]
-            badge = q[1:1 + bl]
-        except IndexError:
+        if not p or len(p) < 1 + p[0]:
             return None
-        return _PREFIX_CHAR + char + b":" + badge
+        cl = p[0]
+        return _PREFIX_CHAR + p[1:1 + cl] + b":" + p[1 + cl:]
     if kind == _KIND_STAMP:
         return _PREFIX_STAMP + p
     if kind == _KIND_RAW:

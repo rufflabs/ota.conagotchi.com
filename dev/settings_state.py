@@ -25,6 +25,15 @@ TEXT_NORMAL = "normal"
 TEXT_LARGE = "large"
 TEXT_SIZES = (TEXT_NORMAL, TEXT_LARGE)
 
+DISPLAY_NAME_MAX = 8
+
+
+def clean_name(text) -> str:
+    """A display name: printable ASCII only, trimmed, at most DISPLAY_NAME_MAX."""
+    out = "".join(c for c in str(text) if 32 <= ord(c) <= 126 and c != ":")
+    return out.strip()[:DISPLAY_NAME_MAX].strip()
+
+
 _SAVE_DIR = "data"
 _SAVE_FILE = _SAVE_DIR + "/settings.txt"
 _BLE = None
@@ -48,6 +57,9 @@ class BadgeSettings:
         self.badge_mode = MODE_CONAGOTCHI
         self.keyboard = KEYBOARD_T9
         self.text_size = TEXT_NORMAL
+        # The name other badges see (BLAT); "" means the short badge id.
+        self.display_name = ""
+        self.blat_filter = True     # hide profanity in BLAT messages
         self.load()
 
     def load(self) -> None:
@@ -82,6 +94,10 @@ class BadgeSettings:
                         self.keyboard = value if value in KEYBOARDS else KEYBOARD_T9
                     elif key == "text_size":
                         self.text_size = value if value in TEXT_SIZES else TEXT_NORMAL
+                    elif key == "display_name":
+                        self.display_name = clean_name(value)
+                    elif key == "blat_filter":
+                        self.blat_filter = value != "0"
                     elif key == "ota_channel":
                         # Ignore a channel the firmware no longer offers.
                         self.ota_channel = value if value in ota_channels() else _DEFAULT_OTA_CHANNEL
@@ -101,6 +117,8 @@ class BadgeSettings:
             f.write("badge_mode={}\n".format(self.badge_mode))
             f.write("keyboard={}\n".format(self.keyboard))
             f.write("text_size={}\n".format(self.text_size))
+            f.write("display_name={}\n".format(clean_name(self.display_name)))
+            f.write("blat_filter={}\n".format(1 if self.blat_filter else 0))
             f.write("debug_enabled={}\n".format(1 if self.debug_enabled else 0))
             f.write("debug_led_cycle_enabled={}\n".format(1 if self.debug_led_cycle_enabled else 0))
             f.write("vendor_mode_enabled={}\n".format(1 if self.vendor_mode_enabled else 0))

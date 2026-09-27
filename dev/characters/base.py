@@ -24,6 +24,7 @@ class Character:
 
     id          = ""
     name        = "Unknown"       # Display name; default for PetState.name
+    tag         = "CHI"           # three letters shown beside a player (BLAT chat)
     rarity      = RARITY_NORMAL   # Affects random selection weight on first boot
     starter     = True            # False means unlockable only after collection
     level_color = (100, 200, 150) # RGB for level/XP LEDs; default for PetState.level_color

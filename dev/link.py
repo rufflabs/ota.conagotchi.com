@@ -1,6 +1,8 @@
 import asyncio
 import time
 
+from badge_radio import remember
+
 from machine import UART, Pin
 from config import (
     PIN_LINK_TX, PIN_LINK_RX, LINK_BAUD,
@@ -32,6 +34,15 @@ _RX_SPACE_LEVEL = 1
 
 
 _WIRED_RX_CAP = 256         # trim the RX buffer if it grows past this many bytes.
+_RX_QUEUE_MAX = 16          # decoded packets held for read(); older ones drop
+                            # first, so a flood cannot exhaust memory.
+
+
+def _queue(packets: list, new) -> None:
+    """Append decoded packets, keeping only the newest _RX_QUEUE_MAX."""
+    packets.extend(new)
+    if len(packets) > _RX_QUEUE_MAX:
+        del packets[:len(packets) - _RX_QUEUE_MAX]
 
 
 class WiredLink:
@@ -102,7 +113,7 @@ class WiredLink:
         if len(self._rx_buf) > _WIRED_RX_CAP:
             self._rx_buf = self._rx_buf[-(_WIRED_RX_CAP // 4):]
         if packets:
-            self._rx_packets.extend(packets)
+            _queue(self._rx_packets, packets)
 
 
 class IrLink:
@@ -239,7 +250,7 @@ class IrLink:
             return
         packet = _decode_pulses(levels, durations)
         if packet is not None:
-            self._rx_packets.append(packet)
+            _queue(self._rx_packets, (packet,))
 
 
 def _make_ir_tx_pin():
@@ -405,12 +416,17 @@ class BleLink:
     to go quiet (used to close the pairing window) while still scanning.
     """
 
-    def __init__(self, rssi_min=None, adv_interval_us=None):
+    def __init__(self, rssi_min=None, adv_interval_us=None, check=None):
         import bluetooth
         import ble as _ble
         from config import BLE_RSSI_MIN, BLE_ADV_INTERVAL_US
 
         self._ble_mod = _ble
+        # With the radio key, badge_radio passes check(payload) -> the payload
+        # without its signature, or None when the signature is missing or
+        # wrong. Unsigned and forged adverts are then ignored entirely: not
+        # listed in `heard` / `vendors`, not queued.
+        self._check = check
         self._rssi_min = BLE_RSSI_MIN if rssi_min is None else rssi_min
         self._interval = BLE_ADV_INTERVAL_US if adv_interval_us is None else adv_interval_us
         self._queue = []
@@ -443,12 +459,19 @@ class BleLink:
         if payload is None:
             return
         now = time.ticks_ms()
-        badge = self._ble_mod.sender(payload)
+        # Keyed by what the advert claims, so capped (badge_radio.remember):
+        # a flood of made-up ids cannot exhaust memory.
+        body = payload
+        if self._check is not None:
+            body = self._check(payload)
+            if body is None:
+                return                   # not from a badge with the key
+        badge = self._ble_mod.sender(body)
         if badge:
-            self.heard[badge] = (rssi, now)
-        vid = self._ble_mod.vendor(payload)
+            remember(self.heard, badge, (rssi, now))
+        vid = self._ble_mod.vendor(body)
         if vid:
-            self.vendors[vid] = (rssi, now)
+            remember(self.vendors, vid, (rssi, now))
         if rssi >= self._rssi_min and len(self._queue) < 16:
             self._queue.append(payload)
 

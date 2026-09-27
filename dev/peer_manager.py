@@ -5,8 +5,11 @@ Reset:
 
 1. **Unique peers** — the set of peer hardware badge ids this badge has traded
    with (`record()` / `count()` / `all_peers()`), persisted in data/peers.txt.
-   A peer is identified by its badge id (badge_id.badge_id()), carried in the
-   char-trade payload. Storing the set keeps it idempotent: trading with the
+   A peer is identified by the last PEER_ID_LEN hex digits of its badge id
+   (the part that differs between badges, and what the trade lobby carries).
+   Older saves holding full 12-digit ids are shortened as they are read, so a
+   badge traded with before and after the change counts once. At most
+   MAX_PEERS are kept. Storing the set keeps it idempotent: trading with the
    same person again never inflates the total. Drives the "trade with N
    attendees" challenges.
 
@@ -30,6 +33,8 @@ _TRADE_FILE = "data/trade_count.txt"
 _SENT = "sent"
 _RECV = "recv"
 _MAX_ID = 24
+PEER_ID_LEN = 6
+MAX_PEERS = 500
 
 
 def all_peers():
@@ -43,11 +48,11 @@ def count() -> int:
 
 def record(peer_id: str) -> bool:
     """Record a peer badge id. Returns True only when newly seen."""
-    peer_id = _clean(peer_id)
+    peer_id = _clean(peer_id)[-PEER_ID_LEN:]
     if not peer_id:
         return False
     peers = _load()
-    if peer_id in peers:
+    if peer_id in peers or len(peers) >= MAX_PEERS:
         return False
     peers.append(peer_id)
     _save(peers)
@@ -144,7 +149,7 @@ def _load() -> list:
     try:
         with open(_PEER_FILE) as f:
             for line in f:
-                pid = _clean(line.strip())
+                pid = _clean(line.strip())[-PEER_ID_LEN:]
                 if pid and pid not in peers:
                     peers.append(pid)
     except OSError:

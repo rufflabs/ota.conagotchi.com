@@ -13,7 +13,9 @@ StampCollector  an attendee badge. Collects a vendor's stamp once it has
                 <its badge id> for REPLY_MS, renewed each time that vendor is
                 heard, so the vendor can log who it stamped.
 
-Bluetooth only: no cable or IR (user decision). A screen owns one, calls
+Bluetooth only: no cable or IR (user decision), through badge_radio.BadgeRadio,
+so stamps are signed when the badge holds the radio key and a forged beacon
+or reply is ignored. A screen owns one, calls
 start(), poll() from update(), and stop() on exit. The reply is best effort: an
 attendee who leaves within a second may keep the stamp without the vendor
 logging it.
@@ -21,6 +23,7 @@ logging it.
 import time
 
 import stamp_manager
+from badge_radio import BadgeRadio, remember
 
 # Proximity for stamps, stricter than trades (config.BLE_RSSI_MIN): two badges
 # side by side read about -39 to -46 dB. Higher (less negative) = closer.
@@ -33,42 +36,32 @@ STAMP_WINDOW_MS = 10000  # how long one vendor STAMP press broadcasts
 REPEAT_GRACE_MS = 3000   # wait this long for a new badge before settling for
                          # an already-stamped one
 NEARBY_MS = 4000       # a badge or vendor drops off the nearby list after this
-_READS_PER_POLL = 8
 
 
 class _BleSession:
-    def __init__(self) -> None:
-        self._ble = None
+    def __init__(self, links=None, key=False) -> None:
+        # links / key: fakes for tests; by default Bluetooth and the key file.
+        self.radio = BadgeRadio(ble=True, ir=False, wired=False, links=links, key=key)
         self.running = False
 
+    @property
+    def _ble(self):
+        """The Bluetooth link, for its `heard` / `vendors` signal tables."""
+        return self.radio.ble
+
     def start(self) -> bool:
-        if self._ble is None:
-            try:
-                from link import BleLink
-                self._ble = BleLink()
-            except Exception:
-                self._ble = None
-        self.running = self._ble is not None
+        self.running = self.radio.start() and self.radio.ble is not None
         return self.running
 
     def stop(self) -> None:
-        if self._ble is not None:
-            try:
-                self._ble.deinit()
-            except Exception:
-                pass
-        self._ble = None
+        self.radio.stop()
         self.running = False
 
     def _packets(self):
-        if self._ble is None:
-            return
-        for _ in range(_READS_PER_POLL):
-            if not self._ble.available():
-                return
-            packet = self._ble.read()
-            if packet:
-                yield packet
+        """Verified packets waiting (forged or unsigned ones are dropped
+        when the badge holds the radio key)."""
+        for packet, via in self.radio.read():
+            yield packet
 
     def _fresh(self, table):
         """(key, rssi) heard recently, strongest first."""
@@ -82,8 +75,8 @@ class _BleSession:
 class StampBeacon(_BleSession):
     """A vendor badge: each STAMP press stamps the one badge held close."""
 
-    def __init__(self, vendor_id: str) -> None:
-        super().__init__()
+    def __init__(self, vendor_id: str, links=None, key=False) -> None:
+        super().__init__(links, key)
         self.vendor_id = stamp_manager.normalize_vendor_id(vendor_id)
         self.session_count = 0       # badges newly logged since start()
         self.recent = []             # latest replying badge ids, newest first
@@ -102,12 +95,11 @@ class StampBeacon(_BleSession):
         if self._ble is None:
             return False
         from trade_session import my_badge
-        while self._ble.available():
-            self._ble.read()         # replies from before this press do not count
+        self.radio.drain()           # replies from before this press do not count
         self.result = None
         self._repeat = None          # (badge, ticks) first already-stamped reply
         self._window_end = time.ticks_add(time.ticks_ms(), STAMP_WINDOW_MS)
-        self._ble.send(stamp_manager.stamp_payload(self.vendor_id, my_badge()))
+        self.radio.send(stamp_manager.stamp_payload(self.vendor_id, my_badge()))
         return True
 
     def stamping(self) -> bool:
@@ -123,8 +115,7 @@ class StampBeacon(_BleSession):
     def _close(self, result) -> None:
         self._window_end = None
         self.result = result
-        if self._ble is not None:
-            self._ble.stop_advertising()
+        self.radio.stop_advertising()
 
     def poll(self) -> None:
         if self._window_end is None:
@@ -165,8 +156,8 @@ class StampBeacon(_BleSession):
 class StampCollector(_BleSession):
     """An attendee badge listening for vendor stamps."""
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, links=None, key=False) -> None:
+        super().__init__(links, key)
         self.last = None             # (vendor id, newly collected) or None
         self._have = set(v for v, _ in stamp_manager.all_stamps())
         self._hits = {}              # vendor id -> (strong beacons in a row, ticks)
@@ -191,8 +182,7 @@ class StampCollector(_BleSession):
                 and time.ticks_diff(now, self._reply_until) >= 0):
             self._reply_until = None
             self._reply_vendor = ""
-            if self._ble is not None:
-                self._ble.stop_advertising()
+            self.radio.stop_advertising()
 
     def _close_enough(self, vid: str, now: int) -> bool:
         """True once STAMP_HITS strong beacons from this vendor have arrived,
@@ -200,12 +190,12 @@ class StampCollector(_BleSession):
         rssi = self.rssi(vid)
         count, seen = self._hits.get(vid, (0, now))
         if rssi is None or rssi < STAMP_RSSI_MIN:
-            self._hits[vid] = (0, now)
+            remember(self._hits, vid, (0, now))      # capped: vendor ids are claims
             return False
         if count and time.ticks_diff(now, seen) > HIT_GAP_MS:
             count = 0
         count += 1
-        self._hits[vid] = (count, now)
+        remember(self._hits, vid, (count, now))
         return count >= STAMP_HITS
 
     def rssi(self, vid: str):
@@ -219,7 +209,7 @@ class StampCollector(_BleSession):
         if vid != self._reply_vendor and self._ble is not None:
             from trade_session import my_badge
             self._reply_vendor = vid
-            self._ble.send(stamp_manager.ack_payload(vid, my_badge()))
+            self.radio.send(stamp_manager.ack_payload(vid, my_badge()))
 
     def nearby(self):
         """Vendors heard nearby, as (vendor id, rssi), strongest first."""

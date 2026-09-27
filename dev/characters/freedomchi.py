@@ -3,6 +3,7 @@ from characters.base import Character, RARITY_NORMAL
 
 class Freedomchi(Character):
     id          = "freedomchi"
+    tag         = "CAW"
     name        = "Freedomchi"
     rarity      = RARITY_NORMAL
     starter     = False

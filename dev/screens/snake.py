@@ -7,6 +7,11 @@ import gc9a01py as gc9a01
 from buttons import BOOT, LEFT, RIGHT, SELECT, START
 from image_utils import draw_text
 from screen_manager import Screen
+from led_flash import LedFlash
+import game_scores
+import ui
+
+GAME_ID = "snake"   # game_scores key: best = most food eaten in one run
 
 
 _BG = gc9a01.color565(8, 11, 14)
@@ -35,6 +40,8 @@ _BOARD = _GRID * _CELL
 _BOARD_X = (240 - _BOARD) // 2
 _BOARD_Y = 42
 _STEP_MS = 320
+_EAT_FLASH = ((0, 40, 0), 140)     # (rgb, ms): green when food is eaten
+_CRASH_FLASH = ((50, 0, 0), 600)   # red when the snake crashes
 _SCORE_PANEL_Y = 203
 _SCORE_Y = 207
 _BEST_Y = 220
@@ -42,6 +49,9 @@ _BEST_Y = 220
 _STATE_INSTRUCTIONS = "instructions"
 _STATE_RUNNING = "running"
 _STATE_GAME_OVER = "game_over"
+# After a crash, buttons wait this long: START and SELECT steer, so a press
+# already on its way must not restart or leave.
+_OVER_LOCK_MS = 600
 
 _UP = (0, -1)
 _DOWN = (0, 1)
@@ -65,19 +75,27 @@ class SnakeScreen(Screen):
         self._deadline = 0
         self._score = 0
         self._best = 0
+        self._over_at = 0
+        self._flash = LedFlash()
+        self._leds = None
         self._head_color = gc9a01.color565(90, 210, 160)
 
     async def enter(self, display, leds, mgr) -> None:
+        self._leds = leds
         _sync_theme()
+        self._best = game_scores.get(GAME_ID, "best")
         random.seed(time.ticks_ms())
         self._state = _STATE_INSTRUCTIONS
         self._draw_instructions(display)
         leds.rgb_off()
 
     async def exit(self, display, leds, mgr) -> None:
+        if self._state == _STATE_RUNNING:     # leaving mid-run still counts
+            game_scores.end_run(GAME_ID, self._score)
         leds.rgb_off()
 
     async def update(self, display, leds, mgr) -> None:
+        self._flash.tick(leds)
         if self._state != _STATE_RUNNING:
             return
         if time.ticks_diff(time.ticks_ms(), self._deadline) < 0:
@@ -98,8 +116,12 @@ class SnakeScreen(Screen):
             return
 
         if self._state == _STATE_GAME_OVER:
+            if time.ticks_diff(time.ticks_ms(), self._over_at) < _OVER_LOCK_MS:
+                return
             if btn == START:
                 self._start(mgr._display)
+            elif btn == SELECT:
+                mgr.pop()
             return
 
         self._set_direction(btn)
@@ -110,6 +132,7 @@ class SnakeScreen(Screen):
         self._direction = _RIGHT
         self._next_direction = _RIGHT
         self._score = 0
+        game_scores.count_play(GAME_ID)
         self._spawn_food()
         self._state = _STATE_RUNNING
         self._deadline = time.ticks_add(time.ticks_ms(), _STEP_MS)
@@ -139,12 +162,16 @@ class SnakeScreen(Screen):
         ate = new_head == self._food
 
         if self._hits_wall(new_head) or self._hits_self(new_head, ate):
+            if self._leds is not None:
+                self._flash.start(self._leds, *_CRASH_FLASH)
             self._game_over(display)
             return
 
         self._snake.insert(0, new_head)
         if ate:
             self._score += 1
+            if self._leds is not None:
+                self._flash.start(self._leds, *_EAT_FLASH)
             _award_happiness(mgr)
             self._best = max(self._best, self._score)
             self._spawn_food()
@@ -176,24 +203,23 @@ class SnakeScreen(Screen):
 
     def _game_over(self, display) -> None:
         self._state = _STATE_GAME_OVER
+        self._over_at = time.ticks_ms()
+        game_scores.end_run(GAME_ID, self._score)
         self._draw_game(display)
-        _center_text(display, "GAME OVER", 92, _WARN, _GRID_BG)
-        _center_text(display, "START RETRY", 112, _TEXT, _GRID_BG)
+        _center_text(display, "GAME OVER", 88, _WARN, _GRID_BG)
+        _center_text(display, "START RETRY", 108, _TEXT, _GRID_BG)
+        _center_text(display, "SEL EXIT", 124, _TEXT, _GRID_BG)
 
     def _draw_instructions(self, display) -> None:
-        display.fill(_BG)
-        display.fill_rect(0, 0, 240, 36, _PANEL)
-        display.fill_rect(0, 211, 240, 29, _PANEL)
-        _center_text(display, "SNAKE", 14, _TEXT, _PANEL)
-        _center_text(display, "EAT FOOD", 48, _TEXT, _BG)
-        _center_text(display, "DONT HIT WALLS", 66, _MUTED, _BG)
-        _center_text(display, "CONTROLS", 94, _TEXT, _BG)
-        _center_text(display, "UP = L", 114, _MUTED, _BG)
-        _center_text(display, "DOWN = SELECT", 132, _MUTED, _BG)
-        _center_text(display, "LEFT = START", 150, _MUTED, _BG)
-        _center_text(display, "RIGHT = R", 168, _MUTED, _BG)
-        _center_text(display, "BOOT = EXIT", 190, _WARN, _BG)
-        _center_text(display, "START TO PLAY", 219, _TEXT, _PANEL)
+        ui.game_intro(
+            display, "SNAKE",
+            ("EAT FOOD", ("DONT HIT WALLS", "muted"), "",
+             ("L=UP  SEL=DOWN", "muted"), ("ST=LEFT  R=RIGHT", "muted"), "",
+             ("BOOT = EXIT", "danger")),
+            large_lines=("EAT FOOD", ("L=UP", "muted"), ("SEL=DOWN", "muted"),
+                         ("ST=LEFT", "muted"), ("R=RIGHT", "muted"),
+                         ("BOOT=EXIT", "danger")),
+            best=self._best, last=game_scores.get(GAME_ID, "last", None))
 
     def _draw_game(self, display) -> None:
         self._draw_static_game(display)
@@ -210,12 +236,14 @@ class SnakeScreen(Screen):
         self._draw_score(display)
 
         display.fill_rect(_BOARD_X, _BOARD_Y, _BOARD, _BOARD, _GRID_BG)
-        display.rect(_BOARD_X - 1, _BOARD_Y - 1, _BOARD + 2, _BOARD + 2, _MUTED)
-        for idx in range(_GRID + 1):
+        for idx in range(1, _GRID):
             x = _BOARD_X + idx * _CELL
             y = _BOARD_Y + idx * _CELL
             display.vline(x, _BOARD_Y, _BOARD, _GRID_LINE)
             display.hline(_BOARD_X, y, _BOARD, _GRID_LINE)
+        # The border is the outermost grid line on all four sides, drawn last
+        # so no grid line paints over it.
+        display.rect(_BOARD_X, _BOARD_Y, _BOARD + 1, _BOARD + 1, _MUTED)
 
     def _draw_score(self, display) -> None:
         # The round bezel narrows the footer; keep each complete label centered.

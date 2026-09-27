@@ -40,6 +40,10 @@ _COLOR_KEYS = (
     "success",   # positive status (complete, on)
     "warning",   # in-progress / caution
     "danger",    # negative status (incomplete, destructive)
+    "hl_fg",     # highlighted row (e.g. a lobby request): its text ...
+    "hl_bg",     # ... and its background. Themes whose text already reads as
+                 # "success" use a filled bar (dark text on green); the others
+                 # use their normal background and green text.
 )
 
 # Layout metrics (px on the 240x240 display).  Per-theme entries override these.
@@ -72,6 +76,9 @@ _THEMES = {
             "success": ( 90, 200, 120),
             "warning": (240, 200,  70),
             "danger":  (225,  70,  70),
+            # Highlight = green text on the normal background.
+            "hl_fg":   ( 90, 200, 120),
+            "hl_bg":   ( 10,  13,  20),
         },
     },
     "light": {
@@ -86,6 +93,9 @@ _THEMES = {
             "success": ( 34, 150,  80),
             "warning": (188, 140,   0),
             "danger":  (200,  50,  50),
+            # Highlight = green text on the normal background.
+            "hl_fg":   ( 34, 150,  80),
+            "hl_bg":   (232, 236, 242),
         },
     },
     "neon": {
@@ -100,6 +110,9 @@ _THEMES = {
             "success": (  0, 255, 150),
             "warning": (255, 220,   0),
             "danger":  (255,  45,  95),
+            # Its text is nearly the success green: highlight with a bar.
+            "hl_fg":   (  6,   4,  16),
+            "hl_bg":   (  0, 255, 150),
         },
     },
     # Green-phosphor DOS/terminal look: tight rows, separator-line chrome,
@@ -116,6 +129,9 @@ _THEMES = {
             "success": ( 70, 245, 120),
             "warning": (240, 220,  60),
             "danger":  (255,  90,  80),
+            # Its text is already green: highlight with a bar.
+            "hl_fg":   (  0,  10,   2),
+            "hl_bg":   ( 70, 245, 120),
         },
         "metrics": {
             "title_h":      24,

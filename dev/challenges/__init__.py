@@ -3,6 +3,7 @@
 from challenges.hackachi import HackachiFirstContact, HackachiJackIn
 from challenges.cryptachi import CryptachiKeyExchange, CryptachiWebOfTrust
 from challenges.freedomchi import FreedomchiFreeData
+from challenges.games import GAME_QUESTS
 from challenges.hackachi_campaign import HACKACHI_QUESTS
 from challenges.adminichi_campaign import ADMINICHI_QUESTS
 
@@ -18,4 +19,5 @@ BASE_QUESTS = [
 # Former sample quests remain defined but inactive; saved IDs are not removed.
 CHI_QUESTS = HACKACHI_QUESTS + ADMINICHI_QUESTS
 
-CHALLENGES = BASE_QUESTS + CHI_QUESTS
+# Shared quests (no owning character) list first: the base quests, then games.
+CHALLENGES = BASE_QUESTS + GAME_QUESTS + CHI_QUESTS

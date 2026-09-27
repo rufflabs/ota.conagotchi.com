@@ -14,6 +14,10 @@ class Challenge:
                                   challenge is only listed/tracked once that
                                   character is unlocked.  "" = every badge.
         is_met()                — completion criteria (usually via a criteria base)
+        is_ctf                  — True when completing it reveals a flag to enter
+                                  on the event CTF site; it then needs a row in
+                                  challenge_flags.json. False (the default) is a
+                                  badge-only challenge with no flag.
 
     Multi-step challenges also override `progress()` to report (current, target) so
     the detail view can show "IN PROGRESS (1/10)".
@@ -27,6 +31,7 @@ class Challenge:
     name        = "Unnamed Challenge"
     description = ""
     character   = ""      # owning character id; "" = universal (any badge)
+    is_ctf      = False   # reveals a CTF flag when completed (see above)
 
     # Reward applied by the default on_complete().
     reward_happiness = 2
@@ -68,6 +73,7 @@ class LabChallenge(Challenge):
     lab's saved state, so the pet screen picks it up on its normal sweep."""
 
     interactive = True
+    is_ctf = True
     prerequisite = ""
 
     @classmethod

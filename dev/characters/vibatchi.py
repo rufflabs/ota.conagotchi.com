@@ -3,6 +3,7 @@ from characters.base import Character, RARITY_NORMAL
 
 class Vibatchi(Character):
     id          = "vibatchi"
+    tag         = "VIB"
     name        = "Vibatchi"
     rarity      = RARITY_NORMAL
     level_color = (150, 120, 255)

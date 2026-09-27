@@ -13,8 +13,12 @@ Ring menu
       top (12) → right (2) → bottom-right (4) → bottom (6)
                → bottom-left (8) → left (10) → …
 
+  Nothing is selected at boot, or after _DESELECT_MS without a button press.
+  The first LEFT / RIGHT then moves from the top-centre item (_IDLE_ANCHOR)
+  as if it had been selected, so RIGHT lands on the item clockwise of it.
+
   LEFT / RIGHT   — move selection around the ring
-  START          — activate selected item:
+  START          — activate selected item (nothing when none is selected):
                      "screen:X"  →  mgr.push() the matching sub-menu screen
   SELECT         — go back (noop at root; submenus call mgr.pop() themselves)
 
@@ -62,7 +66,7 @@ from leds import hue_to_rgb
 #   label   — primitive fallback text
 #   action  — pet action id  OR  "screen:<id>" to push a sub-menu screen
 #
-# Items are ordered clockwise from the default Pet selection.
+# Items are ordered clockwise, starting with Pet (top right).
 # Artist asset markers (btn_paw, btn_controller, etc.) map to these menu ids in
 # assets/menu_buttons/menu_button_map.json.
 _MB_ID     = 0
@@ -84,6 +88,8 @@ _MENU_BTNS = (
 )
 
 _PRESS_MS  = 150   # ms to show pressed state before activating
+_DESELECT_MS = 30000   # no button press for this long clears the ring selection
+_IDLE_ANCHOR = "challenges"   # top centre: where the first LEFT/RIGHT moves from
 _CHALLENGE_CHECK_MS = 1500   # how often to re-check challenge completion
 
 # Primitive button colours (used when sprite files are absent)
@@ -155,7 +161,8 @@ class ConagotchiScreen(Screen):
         self._has_bg         = False
         self._bg_fb          = None   # full-screen bg framebuf for keyed buttons
         self._menu           = self._build_menu()
-        self._menu_sel       = 0
+        self._menu_sel       = None   # index into _menu; None = nothing selected
+        self._input_ms       = 0      # last button press, for _DESELECT_MS
         self._pressing       = False
         self._press_at       = 0
         self._last_ms        = 0
@@ -169,10 +176,11 @@ class ConagotchiScreen(Screen):
         self._has_bg, self._bg_fb = _load_bg(display, self._bg_path, self._bg_color)
         # Rebuild the ring in case Vendor Mode was toggled in Settings.
         self._menu     = self._build_menu()
-        if self._menu_sel >= len(self._menu):
-            self._menu_sel = 0
+        if self._menu_sel is not None and self._menu_sel >= len(self._menu):
+            self._menu_sel = None
         self._pressing = False
         self._last_ms  = time.ticks_ms()
+        self._input_ms = self._last_ms   # back from a sub-menu counts as activity
         # Force a full LED redraw: a pushed screen (e.g. the Settings LED test)
         # may have driven the strip directly, so the cached state is stale.
         self._led_state = (-1, -1)
@@ -219,6 +227,8 @@ class ConagotchiScreen(Screen):
                 self._do_activate(display, mgr)
             return
 
+        self._deselect_if_idle(display, now)
+
         # ── Character animation ───────────────────────────────────────────────
         anim = self._sync_anim()
         advanced = anim.tick(display, bg, time.ticks_ms(), self._bg_fb)
@@ -242,12 +252,13 @@ class ConagotchiScreen(Screen):
     def handle_button(self, btn: str, mgr) -> None:
         if self._pressing:
             return
+        self._input_ms = time.ticks_ms()
 
         if btn == LEFT:
             self._nav_ring(mgr._display, -1)
         elif btn == RIGHT:
             self._nav_ring(mgr._display, +1)
-        elif btn == START:
+        elif btn == START and self._menu_sel is not None:
             _draw_btn(mgr._display, self._menu[self._menu_sel], "press")
             self._pressing = True
             self._press_at = time.ticks_ms()
@@ -401,10 +412,26 @@ class ConagotchiScreen(Screen):
 
     def _nav_ring(self, display, direction: int) -> None:
         prev = self._menu_sel
-        self._menu_sel = (self._menu_sel + direction) % len(self._menu)
+        start = self._anchor_index() if prev is None else prev
+        self._menu_sel = (start + direction) % len(self._menu)
         bg = self._btn_bg()
-        _draw_btn(display, self._menu[prev], "unsel", *bg)
+        if prev is not None:
+            _draw_btn(display, self._menu[prev], "unsel", *bg)
         _draw_btn(display, self._menu[self._menu_sel], "sel", *bg)
+
+    def _deselect_if_idle(self, display, now: int) -> None:
+        """After _DESELECT_MS without a button press, clear the selection."""
+        if (self._menu_sel is not None
+                and time.ticks_diff(now, self._input_ms) >= _DESELECT_MS):
+            _draw_btn(display, self._menu[self._menu_sel], "unsel", *self._btn_bg())
+            self._menu_sel = None
+
+    def _anchor_index(self) -> int:
+        """Where the first LEFT/RIGHT moves from when nothing is selected."""
+        for i, b in enumerate(self._menu):
+            if b[_MB_ID] == _IDLE_ANCHOR:
+                return i
+        return 0
 
     def _draw_ring(self, display) -> None:
         """Draw all ring items; called on enter/resume."""

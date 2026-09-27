@@ -6,27 +6,44 @@ import gc9a01py as gc9a01
 from buttons import BOOT, LEFT, RIGHT, SELECT, START
 from image_utils import draw_text
 from screen_manager import Screen
+import game_scores
+import ui
+
+GAME_ID = "simon"   # game_scores key: best = most rounds cleared in one run
 
 
 _BG = gc9a01.color565(9, 11, 16)
-_PANEL = gc9a01.color565(20, 22, 28)
 _TEXT = gc9a01.WHITE
 _TEXT_DARK = gc9a01.color565(15, 15, 15)
-_MUTED = gc9a01.color565(140, 150, 160)
-_BACK_BG = gc9a01.color565(255, 205, 30)
 
 
 def _sync_theme() -> None:
-    """Theme the neutral chrome only; the Simon pad colours are game identity."""
-    global _BG, _PANEL, _MUTED, _TEXT
+    """Theme the background only; the chrome comes from ui, and the Simon pad
+    colours are game identity."""
+    global _BG
     import theme
-    t = theme.get()
-    _BG, _PANEL, _MUTED, _TEXT = t.bg, t.surface, t.muted, t.text
+    _BG = theme.get().bg
 
-_BAR_Y = 38
-_BAR_H = 170
+# Four pads between the title panel and the bottom strip. The display is
+# round, so each pad is as tall as the glass allows at its position: the outer
+# pads are shorter than the inner ones, and every corner stays on the glass.
 _BAR_W = 42
-_BAR_X = (16, 68, 120, 172)
+_BAR_X = (24, 74, 124, 174)
+_PADS_TOP = ui.TITLE_PANEL_H + 6
+_PADS_BOTTOM = 190            # above the bottom strip (ui._CTRL_TOP = 196)
+_GLASS_R = 114                # the same margin ui.box_width keeps
+
+
+def _bar_span(x):
+    """(top, height) of the pad whose left edge is `x`."""
+    dx = max(abs(119.5 - x), abs(119.5 - (x + _BAR_W - 1)))
+    half = (_GLASS_R * _GLASS_R - dx * dx) ** 0.5
+    top = max(_PADS_TOP, int(119.5 - half) + 1)
+    bottom = min(_PADS_BOTTOM, int(119.5 + half))
+    return top, bottom - top + 1
+
+
+_BAR_SPANS = tuple(_bar_span(x) for x in _BAR_X)
 
 _WATCH_DELAY_MS = 700
 _FLASH_MS = 430
@@ -48,7 +65,8 @@ _STATE_SHOW_GAP = "show_gap"
 _STATE_INPUT = "input"
 _STATE_HIT = "hit"
 _STATE_ROUND_CLEAR = "round_clear"
-_STATE_FAIL = "fail"
+_STATE_FAIL = "fail"          # the miss is shown; buttons wait _FAIL_MS
+_STATE_OVER = "over"          # START plays again, SELECT leaves
 
 
 # Button order follows the physical board order from left to right.
@@ -76,6 +94,7 @@ class SimonScreen(Screen):
     def __init__(self) -> None:
         self._pattern = []
         self._best = 0
+        self._run = None    # rounds cleared this run; None = no run to record
         self._state = _STATE_INSTRUCTIONS
         self._show_idx = 0
         self._input_idx = 0
@@ -86,15 +105,19 @@ class SimonScreen(Screen):
         _sync_theme()
         random.seed(time.ticks_ms())
         self._pattern = []
+        self._best = game_scores.get(GAME_ID, "best")
+        self._run = None
         self._state = _STATE_INSTRUCTIONS
         self._show_idx = 0
         self._input_idx = 0
         self._lit_idx = -1
         self._deadline = 0
-        _draw_instructions(display)
+        _draw_instructions(display, self._best,
+                           game_scores.get(GAME_ID, "last", None))
         leds.rgb_off()
 
     async def exit(self, display, leds, mgr) -> None:
+        self._record_run()          # leaving mid-run still counts the rounds
         leds.rgb_off()
 
     async def update(self, display, leds, mgr) -> None:
@@ -121,7 +144,8 @@ class SimonScreen(Screen):
             leds.rgb_off()
             if self._input_idx >= len(self._pattern):
                 _award_happiness(mgr)
-                self._best = max(self._best, len(self._pattern))
+                self._run = len(self._pattern)
+                self._best = max(self._best, self._run)
                 self._state = _STATE_ROUND_CLEAR
                 self._deadline = _after(_ROUND_CLEAR_MS)
                 _draw_status(display, "ROUND %d" % len(self._pattern), "GOOD")
@@ -131,11 +155,11 @@ class SimonScreen(Screen):
         elif self._state == _STATE_ROUND_CLEAR:
             self._start_next_round(display, leds)
         elif self._state == _STATE_FAIL:
-            self._pattern = []
-            _draw_board(display)
-            _draw_status(display, "SIMON", "WATCH")
-            self._state = _STATE_READY
-            self._deadline = _after(_WATCH_DELAY_MS)
+            # The miss has been shown long enough that a pad still being
+            # pressed cannot count as a choice; now wait for one.
+            self._state = _STATE_OVER
+            leds.rgb_off()
+            _draw_status(display, "GAME OVER", "ST RETRY SEL EXIT")
 
     def handle_button(self, btn: str, mgr) -> None:
         if btn == BOOT:
@@ -145,6 +169,14 @@ class SimonScreen(Screen):
         if self._state == _STATE_INSTRUCTIONS:
             if btn == START:
                 self._start_next_round(mgr._display, mgr._leds)
+            return
+
+        if self._state == _STATE_OVER:
+            if btn == START:
+                self._pattern = []
+                self._start_next_round(mgr._display, mgr._leds)
+            elif btn == SELECT:
+                mgr.pop()
             return
 
         if self._state != _STATE_INPUT:
@@ -157,6 +189,9 @@ class SimonScreen(Screen):
         self._handle_player_pad(pad_idx, mgr._display, mgr._leds)
 
     def _start_next_round(self, display, leds) -> None:
+        if not self._pattern:       # a new run
+            game_scores.count_play(GAME_ID)
+            self._run = 0
         self._pattern.append(random.getrandbits(2))
         self._show_idx = 0
         self._input_idx = 0
@@ -186,6 +221,7 @@ class SimonScreen(Screen):
         self._deadline = _after(_round_hit_ms(len(self._pattern)))
 
     def _fail(self, display, leds, pad_idx: int) -> None:
+        self._record_run()
         self._lit_idx = pad_idx
         _draw_bar(display, pad_idx, True)
         _draw_status(display, "MISS", "BEST %d" % self._best)
@@ -195,6 +231,12 @@ class SimonScreen(Screen):
         leds.rgb_show()
         self._state = _STATE_FAIL
         self._deadline = _after(_FAIL_MS)
+
+    def _record_run(self) -> None:
+        """Save this run's rounds cleared once, when it ends."""
+        if self._run is not None:
+            game_scores.end_run(GAME_ID, self._run)
+            self._run = None
 
 
 def _after(ms: int) -> int:
@@ -222,43 +264,37 @@ def _round_hit_ms(round_num: int) -> int:
 
 
 def _draw_board(display) -> None:
-    display.fill(_BG)
-    display.fill_rect(0, 0, 240, 33, _PANEL)
-    display.fill_rect(0, 211, 240, 29, _PANEL)
+    ui.clear(display)
     for idx in range(4):
         _draw_bar(display, idx, False)
 
 
-def _draw_instructions(display) -> None:
-    display.fill(_BG)
-    display.fill_rect(0, 0, 240, 36, _PANEL)
-    display.fill_rect(0, 211, 240, 29, _PANEL)
-    _center_text(display, "SIMON", 14, _TEXT, _PANEL)
-    _center_text(display, "WATCH COLORS", 62, _TEXT, _BG)
-    _center_text(display, "REPEAT PATTERN", 82, _MUTED, _BG)
-    _center_text(display, "USE BUTTONS:", 112, _TEXT, _BG)
-    _center_text(display, "L SEL ST R", 132, _MUTED, _BG)
-    display.fill_rect(36, 158, 168, 22, _BACK_BG)
-    display.rect(36, 158, 168, 22, gc9a01.WHITE)
-    _center_text(display, "BOOT EXITS GAME", 165, _TEXT_DARK, _BACK_BG)
-    _center_text(display, "START TO PLAY", 219, _TEXT, _PANEL)
+def _draw_instructions(display, best, last) -> None:
+    ui.game_intro(
+        display, "SIMON",
+        ("WATCH COLORS", ("REPEAT PATTERN", "muted"), "",
+         "USE BUTTONS:", ("L SEL ST R", "muted"), "",
+         ("BOOT EXITS GAME", "danger")),
+        large_lines=("WATCH AND", "REPEAT", "", ("L SEL ST R", "muted"), "",
+                     ("BOOT=EXIT", "danger")),
+        best=best, last=last)
 
 
 def _draw_status(display, top: str, bottom: str) -> None:
-    display.fill_rect(0, 0, 240, 33, _PANEL)
-    display.fill_rect(0, 211, 240, 29, _PANEL)
-    _center_text(display, top, 12, _TEXT, _PANEL)
-    draw_text(display, bottom, 230 - len(bottom) * 8, 219, _MUTED, _PANEL)
+    """The round in the title panel, the phase in the bottom strip."""
+    ui.title_bar(display, top)
+    ui.bottom_line(display, bottom)
 
 
 def _draw_bar(display, idx: int, lit: bool) -> None:
     x = _BAR_X[idx]
+    y, h = _BAR_SPANS[idx]
     color = _PAD_LIT[idx] if lit else _PAD_DIM[idx]
-    display.fill_rect(x, _BAR_Y, _BAR_W, _BAR_H, color)
-    display.rect(x, _BAR_Y, _BAR_W, _BAR_H, gc9a01.WHITE if lit else _BG)
+    display.fill_rect(x, y, _BAR_W, h, color)
+    display.rect(x, y, _BAR_W, h, gc9a01.WHITE if lit else _BG)
     label = _PAD_LABELS[idx]
     lx = x + (_BAR_W - len(label) * 8) // 2
-    draw_text(display, label, lx, _BAR_Y + _BAR_H - 20, _PAD_FG[idx], color)
+    draw_text(display, label, lx, y + h - 20, _PAD_FG[idx], color)
 
 
 def _center_text(display, text: str, y: int, fg: int, bg: int) -> None:
