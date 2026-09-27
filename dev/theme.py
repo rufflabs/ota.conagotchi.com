@@ -31,6 +31,8 @@ _DEFAULT = "dark"
 _COLOR_KEYS = (
     "bg",        # screen background
     "surface",   # panels / bars / selection base
+    "heading",   # list section headings: a title-style band, clearly set off
+                 # from the background (checked against bg in the tests)
     "sel",       # selected-row highlight (fill chrome)
     "text",      # primary text
     "muted",     # secondary / hint text / separators
@@ -62,6 +64,7 @@ _THEMES = {
         "colors": {
             "bg":      ( 10,  13,  20),
             "surface": ( 22,  27,  36),
+            "heading": ( 30,  37,  50),
             "sel":     ( 24, 102, 148),
             "text":    (255, 255, 255),
             "muted":   (145, 155, 170),
@@ -75,6 +78,7 @@ _THEMES = {
         "colors": {
             "bg":      (232, 236, 242),
             "surface": (255, 255, 255),
+            "heading": (204, 212, 224),
             "sel":     (150, 195, 240),
             "text":    ( 20,  26,  36),
             "muted":   ( 96, 108, 126),
@@ -88,6 +92,7 @@ _THEMES = {
         "colors": {
             "bg":      (  6,   4,  16),
             "surface": ( 26,  10,  46),
+            "heading": ( 40,  14,  68),
             "sel":     (150,  30, 190),
             "text":    (  0, 255, 190),
             "muted":   (140,  90, 190),
@@ -103,6 +108,7 @@ _THEMES = {
         "colors": {
             "bg":      (  0,  10,   2),
             "surface": (  0,  24,   8),
+            "heading": (  0,  44,  16),
             "sel":     (  0,  56,  18),
             "text":    ( 60, 235, 110),
             "muted":   ( 32, 140,  70),

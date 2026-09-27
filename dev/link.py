@@ -398,7 +398,8 @@ class BleLink:
     scanning runs continuously and decoded peer payloads are queued for read().
     Adverts weaker than `rssi_min` are dropped so only nearby badges register.
     Every badge heard, however weak, is also noted in `heard` (badge id ->
-    (rssi, ticks_ms)) so a screen can show who is nearby and how close.
+    (rssi, ticks_ms)), and every vendor stamp beacon in `vendors` (vendor id ->
+    (rssi, ticks_ms)), so a screen can show who is nearby and how close.
 
     Advertising is NOT started until the first send(); call stop_advertising()
     to go quiet (used to close the pairing window) while still scanning.
@@ -415,6 +416,7 @@ class BleLink:
         self._queue = []
         self._advertising = False
         self.heard = {}
+        self.vendors = {}
 
         # Power on the BLE radio before any scan/advertise. There is no user
         # Bluetooth toggle anymore and apply_radios() leaves BT off at boot, so
@@ -440,9 +442,13 @@ class BleLink:
         payload = self._ble_mod.decode_adv(bytes(adv_data))
         if payload is None:
             return
+        now = time.ticks_ms()
         badge = self._ble_mod.sender(payload)
         if badge:
-            self.heard[badge] = (rssi, time.ticks_ms())
+            self.heard[badge] = (rssi, now)
+        vid = self._ble_mod.vendor(payload)
+        if vid:
+            self.vendors[vid] = (rssi, now)
         if rssi >= self._rssi_min and len(self._queue) < 16:
             self._queue.append(payload)
 

@@ -26,6 +26,8 @@ async def main():
     leds    = Leds()
     settings = BadgeSettings()
     settings.apply_radios()
+    import ui
+    ui.set_list_scale(2 if settings.text_size == "large" else 1)
 
     import fps_counter
     fps_counter.set_enabled(settings.fps_enabled)   # restore persisted overlay state

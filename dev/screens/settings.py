@@ -1,9 +1,28 @@
-"""Badge settings submenu screen."""
+"""Settings, and the hidden Debug menu.
+
+Every page is its own screen, and every list page is a menu.ListScreen, the
+same list every other part of the badge uses: selection, scroll window,
+scrolling titles and rows, message line and controls all come from there.
+
+    SettingsScreen      the top level (Wireless, Badge, System, Credits, and
+                        Debug once unlocked) and each group:
+                        Wireless: Wi-Fi, Bluetooth, IR
+                        Badge: Badge Mode, Theme, Keyboard, Text Size
+                        System: Update, Factory Reset
+    WifiScreen          radio, scan, connect, net check, SSID/password, ...
+    CreditsScreen       BOOT x5 here unlocks Debug
+    DebugScreen         the top level, and each group (Chi's, Reset, ...)
+    ...                 editors, pickers and tests opened from those
+
+Pages hand results back to the page that opened them through `message`, which
+that page shows when it resumes.
+"""
 import time
 
 import ui
 from buttons import BOOT, LEFT, RIGHT, SELECT, START
 from config import NUM_RGB_LEDS, WIFI_PASSWORD, WIFI_SSID
+from menu import ListScreen
 from pet_state import MAX_EXPERIENCE, MAX_LEVEL, PetState
 from screen_manager import Screen
 from settings_state import (
@@ -16,56 +35,37 @@ from settings_state import (
     wifi_status,
 )
 
+# Settings: top-level rows, some of which open a group of related items (the
+# same shape as Debug). Debug appears once unlocked; Update only when an OTA
+# host is configured.
+_SETTINGS_TOP = ("wireless", "badge", "system", "credits", "debug")
+_SETTINGS_GROUPS = {
+    # key: (row label, page title, items)
+    "wireless": ("Wireless", "WIRELESS", ("wifi", "bluetooth", "ir")),
+    "badge": ("Badge", "BADGE", ("badge_mode", "theme", "keyboard", "text_size")),
+    "system": ("System", "SYSTEM", ("update", "reset")),
+}
 
-# Scrolls headings too long for the title row ("PET RESOURCES", ...). Every
-# page draws its title through it; update() advances it.
-_TITLE = ui.Marquee()
-
-_VIEW_MENU = "menu"
-_VIEW_WIFI = "wifi"
-_VIEW_WIFI_SCAN = "wifi_scan"
-_VIEW_CREDITS = "credits"
-_VIEW_DEBUG = "debug"
-_VIEW_BUTTONS = "buttons"          # duration picker
-_VIEW_BUTTON_LIVE = "button_live"  # live per-button test
-_VIEW_LEDS = "leds"
-_VIEW_LEVEL = "level"
-_VIEW_EXP = "exp"
-_VIEW_RESOURCES = "resources"
-_VIEW_CHARACTER = "character"
-_VIEW_SPLASH = "splash"
-_VIEW_RESET = "reset"
+# How each badge mode is shown (the saved value is unchanged).
+_MODE_LABELS = {"conagotchi": "CHI", "blinky": "BLINKY"}
 
 _DEBUG_UNLOCK_PRESSES = 5   # BOOT presses in Credits to unlock the Debug menu
 _FLASH_MS = 900             # how long the "DEBUG" unlock dialog stays on screen
 
-_DBG_ENABLE = 0
-_DBG_BUTTONS = 1
-_DBG_LEDS = 2
-_DBG_LEVEL = 3
-_DBG_EXP = 4
-_DBG_RESOURCES = 5
-_DBG_CHARACTER = 6
-_DBG_UNLOCK_ALL = 7
-_DBG_LOCK_ALL = 8
-_DBG_VENDOR = 9
-_DBG_SPLASH = 10
-_DBG_BLUETOOTH = 11
-_DBG_FPS = 12
-_DBG_OTA_CHANNEL = 13
-_DBG_COUNT = 14
+# Debug menu: top-level rows, some of which open a group of related items.
+# "Disable Debug Menu" is last so a stray START on entering cannot hit it.
+_DEBUG_TOP = ("chis", "reset", "hardware", "system", "vendor", "enable")
+_DEBUG_GROUPS = {
+    # key: (row label, page title, items)
+    "chis": ("Chi's", "CHI'S", ("character", "level", "exp", "resources",
+                                "unlock_all", "lock_all")),
+    "reset": ("Reset", "RESET", ("clear_stamps", "clear_challenges")),
+    "hardware": ("Hardware", "HARDWARE", ("buttons", "leds", "bluetooth", "fps")),
+    "system": ("System", "SYSTEM", ("splash", "ota_channel")),
+}
+_CLEAR_CONFIRM_MS = 3000   # second START must follow within this to clear
 
 _EXP_STEP = 100
-_REDRAW_MS = 180
-_WIFI_RADIO = 0
-_WIFI_SCAN = 1
-_WIFI_CONNECT = 2
-_WIFI_CHECK = 3
-_WIFI_SSID = 4
-_WIFI_PASSWORD = 5
-_WIFI_DISCONNECT = 6
-_WIFI_FORGET = 7
-_WIFI_COUNT = 8
 _BTN_DURATIONS = (5, 10, 15, 30)   # seconds offered by the button-test picker
 _LED_ALERT = 0
 _LED_RAFFLE = 1
@@ -89,8 +89,8 @@ _BTN_LIVE = (
 )
 
 # Pet Resources debug editor: (display label, PetState attribute). The Work row's
-# label is replaced with the active character's work_name at draw time. Order
-# mirrors the pet stats menu.
+# label is replaced with the active character's work_name. Order mirrors the
+# pet stats menu.
 _RESOURCE_DEFS = (
     ("Happiness", "happiness"),
     ("Hydration", "thirst"),
@@ -98,687 +98,107 @@ _RESOURCE_DEFS = (
     ("Work", "work"),
 )
 
+# The pet screen whose level/XP LEDs are kept animating after a Level/EXP save:
+# its own loop is paused while Settings is on top. Cleared when Settings closes.
+_PET_LEDS = None
 
-class SettingsScreen(Screen):
-    """Settings launcher and simple badge toggles."""
 
-    accepts_disabled_buttons = True
+class _SettingsList(ListScreen):
+    """A Settings list page: the badge settings, the pet, and the pet LEDs."""
 
-    def __init__(self) -> None:
-        self._settings = BadgeSettings()
-        self._sel = 0
-        self._debug_sel = 0
-        self._button_sel = 0            # duration-picker selection
-        self._button_dur = 0            # chosen test duration (seconds)
-        self._button_test_end = 0       # ticks_ms deadline for the live test
-        self._button_tested = set()     # buttons pressed during this live test
-        self._button_live_sig = None    # last-drawn live-test signature
-        self._led_sel = 0
-        self._led_states = [False] * (NUM_RGB_LEDS + 2)
-        self._led_con = None            # ConagotchiScreen driven for live pet LEDs
-        self._view = _VIEW_MENU
-        self._message = ""
-        self._last_button = ""
-        self._last_debug_redraw = 0
-        self._pet = None
-        self._edit_value = 0
-        self._resource_sel = 0          # Pet Resources editor selection
-        self._wifi_sel = 0
-        self._wifi_network_sel = 0
-        self._wifi_networks = ()
-        self._resume_view = _VIEW_MENU  # view to return to after a pushed screen
-        self._character_sel = 0
-        self._characters = ()
-        self._active_char_id = ""
-        self._splash_sel = 0
-        self._splash_options = ()
-        self._credits_boot = 0          # BOOT-press counter for the Debug unlock
-        self._debug_flash_until = 0     # ticks_ms deadline for the unlock flash
-        self._menu_top = 0              # main-menu scroll offset
+    confirm_verb = "OK"
+
+    def __init__(self, settings=None) -> None:
+        super().__init__()
+        self.settings = settings if settings is not None else BadgeSettings()
+        self.pet = None
+
+    def confirm(self):
+        return self.confirm_verb
 
     async def enter(self, display, leds, mgr) -> None:
-        self._pet = _load_pet(mgr)
-        self._draw(display, mgr)
-
-    async def exit(self, display, leds, mgr) -> None:
-        if self._view == _VIEW_LEDS or self._settings.debug_led_cycle_enabled:
-            self._leds_all_off(leds)
+        self.pet = _load_pet(mgr)
+        await super().enter(display, leds, mgr)
 
     async def resume(self, display, leds, mgr) -> None:
-        self._view = self._resume_view
-        self._resume_view = _VIEW_MENU
-        self._pet = _load_pet(mgr)
-        self._draw(display, mgr)
+        self.pet = _load_pet(mgr)
+        await super().resume(display, leds, mgr)
 
     async def update(self, display, leds, mgr) -> None:
-        if self._debug_flash_until:
-            if time.ticks_diff(time.ticks_ms(), self._debug_flash_until) >= 0:
-                self._debug_flash_until = 0
-                self._draw(display, mgr)
-        else:
-            _TITLE.tick(display)
-        if self._view == _VIEW_BUTTON_LIVE:
-            self._update_button_live(display, mgr)
-        # Keep the pet's level/XP LEDs live after a Level/EXP save: the pet
-        # screen's own loop is paused while we're on top, so drive its LED
-        # animation here (only in the editor/debug views — the LED test owns
-        # the strip in _VIEW_LEDS).
-        if self._led_con is not None and \
-                self._view in (_VIEW_DEBUG, _VIEW_LEVEL, _VIEW_EXP):
-            self._led_con._update_leds(leds, time.ticks_ms())
+        await super().update(display, leds, mgr)
+        if _PET_LEDS is not None:
+            _PET_LEDS._update_leds(leds, time.ticks_ms())
 
-    def handle_button(self, btn: str, mgr) -> None:
-        self._last_button = btn
 
-        if self._view == _VIEW_DEBUG:
-            self._handle_debug_button(btn, mgr)
-        elif self._view == _VIEW_BUTTONS:
-            self._handle_button_test_button(btn, mgr)
-        elif self._view == _VIEW_BUTTON_LIVE:
-            self._handle_button_live(btn, mgr)
-        elif self._view == _VIEW_LEDS:
-            self._handle_led_test_button(btn, mgr)
-        elif self._view == _VIEW_LEVEL or self._view == _VIEW_EXP:
-            self._handle_editor_button(btn, mgr)
-        elif self._view == _VIEW_RESOURCES:
-            self._handle_resources_button(btn, mgr)
-        elif self._view == _VIEW_CHARACTER:
-            self._handle_character_button(btn, mgr)
-        elif self._view == _VIEW_SPLASH:
-            self._handle_splash_button(btn, mgr)
-        elif self._view == _VIEW_RESET:
-            self._handle_reset_button(btn, mgr)
-        elif self._view == _VIEW_WIFI:
-            self._handle_wifi_button(btn, mgr)
-        elif self._view == _VIEW_WIFI_SCAN:
-            self._handle_wifi_scan_button(btn, mgr)
-        elif self._view == _VIEW_CREDITS:
-            self._handle_credits_button(btn, mgr)
-        elif self._view != _VIEW_MENU:
-            self._handle_page_button(btn, mgr)
-        else:
-            self._handle_menu_button(btn, mgr)
+# ── Settings ─────────────────────────────────────────────────────────────────
 
-    def _handle_menu_button(self, btn: str, mgr) -> None:
-        if btn == BOOT or btn == SELECT:
-            mgr.pop()
-        elif btn == LEFT:
-            self._move(-1, mgr._display)
-        elif btn == RIGHT:
-            self._move(1, mgr._display)
-        elif btn == START:
-            self._activate_selected(mgr)
+class SettingsScreen(_SettingsList):
+    """The Settings menu (group None) or one of its groups."""
 
-    def _handle_page_button(self, btn: str, mgr) -> None:
-        if btn == BOOT or btn == SELECT:
-            self._view = _VIEW_MENU
-            self._draw(mgr._display, mgr)
+    def __init__(self, settings=None, group=None, root=None) -> None:
+        super().__init__(settings)
+        self.group = group
+        self.root = root if root is not None else self   # the top-level page
+        self.title = "SETTINGS" if group is None else _SETTINGS_GROUPS[group][1]
 
-    def _handle_credits_button(self, btn: str, mgr) -> None:
-        # Secret: BOOT x5 while on the Credits screen unlocks the Debug menu.
-        # BOOT is repurposed here, so SELECT is the way back out.
-        if btn == BOOT:
-            self._credits_boot += 1
-            if self._credits_boot >= _DEBUG_UNLOCK_PRESSES:
-                self._credits_boot = 0
-                self._enable_debug(mgr._display)
-        elif btn == SELECT:
-            self._credits_boot = 0
-            self._view = _VIEW_MENU
-            self._draw(mgr._display, mgr)
+    def rows(self):
+        return _settings_rows(self.settings, self.group)
 
-    def _enable_debug(self, display) -> None:
-        if not self._settings.debug_enabled:
-            self._settings.debug_enabled = True
-            self._settings.save()
-        self._debug_flash_until = time.ticks_ms() + _FLASH_MS
-        ui.dialog(display, "DEBUG", ("UNLOCKED",), kind="accent")
+    def confirm(self):
+        return "OPEN" if self.menu.key in _SETTINGS_GROUPS else "OK"
 
-    def _handle_wifi_button(self, btn: str, mgr) -> None:
-        if btn == BOOT or btn == SELECT:
-            self._view = _VIEW_MENU
-            self._draw(mgr._display, mgr)
-        elif btn == LEFT:
-            self._wifi_sel = (self._wifi_sel - 1) % _WIFI_COUNT
-            self._message = ""
-            self._draw(mgr._display, mgr)
-        elif btn == RIGHT:
-            self._wifi_sel = (self._wifi_sel + 1) % _WIFI_COUNT
-            self._message = ""
-            self._draw(mgr._display, mgr)
-        elif btn == START:
-            if self._wifi_sel == _WIFI_RADIO:
-                self._toggle_wifi()
-                self._draw(mgr._display, mgr)
-            elif self._wifi_sel == _WIFI_SCAN:
-                self._scan_wifi(mgr)
-            elif self._wifi_sel == _WIFI_CONNECT:
-                self._connect_wifi()
-                self._draw(mgr._display, mgr)
-            elif self._wifi_sel == _WIFI_CHECK:
-                self._check_connectivity(mgr)
-            elif self._wifi_sel == _WIFI_SSID:
-                self._open_text_editor("ssid", mgr)
-            elif self._wifi_sel == _WIFI_PASSWORD:
-                self._open_text_editor("password", mgr)
-            elif self._wifi_sel == _WIFI_DISCONNECT:
-                self._message = "DISCONNECTED" if disconnect_wifi() else "NOT CONNECTED"
-                self._draw(mgr._display, mgr)
-            elif self._wifi_sel == _WIFI_FORGET:
-                disconnect_wifi()
-                self._settings.forget_network()
-                self._message = "FORGOTTEN"
-                self._draw(mgr._display, mgr)
+    def back(self, mgr) -> None:
+        if self.group is None:          # leaving Settings entirely
+            global _PET_LEDS
+            _PET_LEDS = None
+        mgr.pop()
 
-    def _handle_wifi_scan_button(self, btn: str, mgr) -> None:
-        if btn == BOOT or btn == SELECT:
-            self._view = _VIEW_WIFI
-            self._message = ""
-            self._draw(mgr._display, mgr)
-        elif btn == LEFT:
-            self._move_wifi_network(-1, mgr._display)
-        elif btn == RIGHT:
-            self._move_wifi_network(1, mgr._display)
-        elif btn == START:
-            if not self._wifi_networks:
-                self._view = _VIEW_WIFI
-                self._message = "NO NETWORKS"
-                self._draw(mgr._display, mgr)
-                return
-            ssid = self._wifi_networks[self._wifi_network_sel][0]
-            if ssid == WIFI_SSID:
-                self._settings.password = WIFI_PASSWORD
-            elif ssid != self._settings.ssid:
-                self._settings.password = ""
-            self._settings.ssid = ssid
-            self._settings.trusted_bssid = ""
-            self._settings.save()
-            disconnect_wifi()   # leave the old network; the radio stays on
-            self._wifi_sel = _WIFI_PASSWORD
-            self._view = _VIEW_WIFI
-            self._message = "SSID SAVED"
-            self._draw(mgr._display, mgr)
-
-    def _move_wifi_network(self, delta: int, display) -> None:
-        if not self._wifi_networks:
-            return
-        self._wifi_network_sel = (self._wifi_network_sel + delta) % len(self._wifi_networks)
-        _draw_wifi_scan_page(display, self._wifi_networks, self._wifi_network_sel)
-
-    def _handle_debug_button(self, btn: str, mgr) -> None:
-        if btn == BOOT or btn == SELECT:
-            self._view = _VIEW_MENU
-            self._draw(mgr._display, mgr)
-        elif btn == LEFT:
-            self._move_debug_cursor(-1, mgr)
-        elif btn == RIGHT:
-            self._move_debug_cursor(1, mgr)
-        elif btn == START:
-            self._activate_debug(mgr)
-
-    def _handle_button_test_button(self, btn: str, mgr) -> None:
-        # Duration picker: choose how long the live test runs.
-        if btn == BOOT or btn == SELECT:
-            self._view = _VIEW_DEBUG
-            self._draw(mgr._display, mgr)
-        elif btn == LEFT:
-            self._button_sel = (self._button_sel - 1) % len(_BTN_DURATIONS)
-            self._draw(mgr._display, mgr)
-        elif btn == RIGHT:
-            self._button_sel = (self._button_sel + 1) % len(_BTN_DURATIONS)
-            self._draw(mgr._display, mgr)
-        elif btn == START:
-            self._start_button_live(mgr)
-
-    def _start_button_live(self, mgr) -> None:
-        self._button_dur = _BTN_DURATIONS[self._button_sel]
-        self._button_test_end = time.ticks_add(time.ticks_ms(), self._button_dur * 1000)
-        self._button_tested = set()
-        self._button_live_sig = None
-        self._view = _VIEW_BUTTON_LIVE
-        _draw_button_live(mgr._display, (), self._button_tested, self._button_dur)
-
-    def _handle_button_live(self, btn: str, mgr) -> None:
-        # Every press is part of the test — mark it, never navigate. The test
-        # ends only when the timer runs out (handled in update()).
-        self._button_tested.add(btn)
-
-    def _update_button_live(self, display, mgr) -> None:
-        remaining = time.ticks_diff(self._button_test_end, time.ticks_ms())
-        if remaining <= 0:
-            self._view = _VIEW_BUTTONS      # timer up -> back to the picker
-            self._draw(display, mgr)
-            return
-        held = tuple(name for name, _label in _BTN_LIVE
-                     if mgr._buttons.raw_pressed(name))
-        for name in held:
-            self._button_tested.add(name)
-        secs = remaining // 1000 + 1
-        sig = (secs, held, frozenset(self._button_tested))
-        if sig != self._button_live_sig:
-            self._button_live_sig = sig
-            _draw_button_live(display, held, self._button_tested, secs)
-
-    def _handle_led_test_button(self, btn: str, mgr) -> None:
-        if btn == BOOT or btn == SELECT:
-            self._leds_all_off(mgr._leds)
-            self._view = _VIEW_DEBUG
-            self._message = "LEDS OFF"
-            self._draw(mgr._display, mgr)
-        elif btn == LEFT:
-            self._move_led_cursor(-1, mgr)
-        elif btn == RIGHT:
-            self._move_led_cursor(1, mgr)
-        elif btn == START:
-            if self._led_sel == _LED_EXIT:
-                self._leds_all_off(mgr._leds)
-                self._view = _VIEW_DEBUG
-                self._message = "LEDS OFF"
-                self._draw(mgr._display, mgr)
-            elif self._led_sel == _LED_ALL_OFF:
-                self._leds_all_off(mgr._leds)
-                self._message = "ALL OFF"
-                self._draw(mgr._display, mgr)
-            else:
-                self._led_states[self._led_sel] = not self._led_states[self._led_sel]
-                self._apply_led_tests(mgr._leds)
-                self._message = _led_label(self._led_sel).upper() + " " + (
-                    "ON" if self._led_states[self._led_sel] else "OFF"
-                )
-                self._redraw_led_current(mgr)
-
-    def _move_led_cursor(self, delta: int, mgr) -> None:
-        old_idx = self._led_sel
-        self._led_sel = (self._led_sel + delta) % _LED_COUNT
-        self._message = ""
-        if self._led_sel == old_idx:
-            return
-        self._draw(mgr._display, mgr)
-
-    def _move_debug_cursor(self, delta: int, mgr) -> None:
-        self._debug_sel = (self._debug_sel + delta) % _DBG_COUNT
-        self._message = ""
-        self._draw(mgr._display, mgr)   # full redraw so the scroll window updates
-
-    def _handle_editor_button(self, btn: str, mgr) -> None:
-        if btn == BOOT or btn == SELECT:
-            self._view = _VIEW_DEBUG
-            self._message = "CANCELLED"
-            self._draw(mgr._display, mgr)
-        elif btn == LEFT:
-            self._adjust_editor(-1, mgr._display, mgr)
-        elif btn == RIGHT:
-            self._adjust_editor(1, mgr._display, mgr)
-        elif btn == START:
-            self._save_editor(mgr)
-
-    def _handle_resources_button(self, btn: str, mgr) -> None:
-        if btn == BOOT or btn == SELECT:
-            self._view = _VIEW_DEBUG
-            self._message = ""
-            self._draw(mgr._display, mgr)
-        elif btn == LEFT:
-            self._move_resource_cursor(-1, mgr)
-        elif btn == RIGHT:
-            self._move_resource_cursor(1, mgr)
-        elif btn == START:
-            self._toggle_resource(mgr)
-
-    def _move_resource_cursor(self, delta: int, mgr) -> None:
-        self._resource_sel = (self._resource_sel + delta) % len(_RESOURCE_DEFS)
-        self._message = ""
-        self._draw(mgr._display, mgr)
-
-    def _toggle_resource(self, mgr) -> None:
-        """Forcibly drain (->0) or fill (->100) the selected resource. Toggles
-        based on the current value: anything above empty drains, empty fills."""
-        label, attr = _RESOURCE_DEFS[self._resource_sel]
-        if attr == "work":
-            label = getattr(self._pet, "work_name", "Work")
-        drain = getattr(self._pet, attr, 0) > 0
-        setattr(self._pet, attr, 0.0 if drain else 100.0)
-        self._pet.save()
-        # Reflect the change on the red Alert LED immediately via the pet screen
-        # beneath us (it shares our _pet instance).
-        con = self._con_screen(mgr)
-        if con is not None:
-            con._update_alert(mgr._leds)
-        self._message = ("DRAINED " if drain else "FILLED ") + ui.clip(label.upper(), 12)
-        self._draw(mgr._display, mgr)
-
-    def _handle_character_button(self, btn: str, mgr) -> None:
-        if btn == BOOT or btn == SELECT:
-            self._view = _VIEW_DEBUG
-            self._message = ""
-            self._draw(mgr._display, mgr)
-        elif btn == LEFT:
-            self._move_character_cursor(-1, mgr)
-        elif btn == RIGHT:
-            self._move_character_cursor(1, mgr)
-        elif btn == START:
-            self._apply_character(mgr)
-
-    def _move_character_cursor(self, delta: int, mgr) -> None:
-        if not self._characters:
-            return
-        self._character_sel = (self._character_sel + delta) % len(self._characters)
-        self._message = ""
-        self._draw(mgr._display, mgr)
-
-    def _open_character_picker(self, mgr) -> None:
-        # Drop any button events still queued from the press that opened this
-        # picker (START both opens and confirms here). Without this, a second
-        # queued/chattered START is delivered straight to the picker and
-        # immediately applies the pre-selected (active) character.
-        mgr._buttons.clear()
-        import character_manager
-        self._characters = character_manager.all_characters()
-        active = character_manager.get_active()
-        self._active_char_id = active.id
-        self._character_sel = 0
-        for idx, cls in enumerate(self._characters):
-            if cls.id == active.id:
-                self._character_sel = idx
-                break
-        self._view = _VIEW_CHARACTER
-        self._message = ""
-        self._draw(mgr._display, mgr)
-
-    def _apply_character(self, mgr) -> None:
-        if not self._characters:
-            return
-        cls = self._characters[self._character_sel]
-        import character_manager
-        character_manager.save(cls)   # persist active + unlock the chosen character
-        from screens.conagotchi import ConagotchiScreen
-        mgr.switch_to(ConagotchiScreen())
-
-    def _open_splash_picker(self, mgr) -> None:
-        # Drop queued events so the opening START isn't re-delivered as a confirm.
-        mgr._buttons.clear()
-        import splash_manager
-        # Row 0 is "Random" (auto / no stored selection); the rest are the
-        # available splash images (regular pool then special pool).
-        self._splash_options = [""] + splash_manager.all_names()
-        current = splash_manager.get_selected()
-        self._splash_sel = 0
-        for idx, name in enumerate(self._splash_options):
-            if name == current:
-                self._splash_sel = idx
-                break
-        self._view = _VIEW_SPLASH
-        self._message = ""
-        self._draw(mgr._display, mgr)
-
-    def _handle_splash_button(self, btn: str, mgr) -> None:
-        if btn == BOOT or btn == SELECT:
-            self._view = _VIEW_DEBUG
-            self._message = ""
-            self._draw(mgr._display, mgr)
-        elif btn == LEFT:
-            self._move_splash_cursor(-1, mgr)
-        elif btn == RIGHT:
-            self._move_splash_cursor(1, mgr)
-        elif btn == START:
-            self._apply_splash(mgr)
-
-    def _move_splash_cursor(self, delta: int, mgr) -> None:
-        if not self._splash_options:
-            return
-        self._splash_sel = (self._splash_sel + delta) % len(self._splash_options)
-        self._message = ""
-        self._draw(mgr._display, mgr)
-
-    def _apply_splash(self, mgr) -> None:
-        if not self._splash_options:
-            return
-        name = self._splash_options[self._splash_sel]
-        import splash_manager
-        splash_manager.set_selected(name)   # "" = random/auto each boot
-        self._message = "AUTO" if not name else splash_manager.label_for(name)
-        self._draw(mgr._display, mgr)
-
-    def _handle_reset_button(self, btn: str, mgr) -> None:
-        if btn == BOOT or btn == SELECT:
-            self._view = _VIEW_MENU
-            self._message = ""
-            self._draw(mgr._display, mgr)
-        elif btn == START:
-            self._perform_factory_reset(mgr)
-
-    def _perform_factory_reset(self, mgr) -> None:
-        _draw_reset_progress(mgr._display)
-        try:
-            import factory_reset
-            factory_reset.wipe()
-        except Exception:
-            pass
-        import machine
-        time.sleep_ms(700)
-        machine.reset()
-
-    def _move(self, delta: int, display) -> None:
-        count = len(_main_menu_items(self._settings))
-        self._sel = (self._sel + delta) % count
-        self._menu_top = ui.clamp_scroll(self._sel, self._menu_top, count)
-        self._message = ""
-        self._draw(display, None)
-
-    def _activate_selected(self, mgr) -> None:
-        items = _main_menu_items(self._settings)
-        if self._sel >= len(items):
-            self._sel = len(items) - 1
-        action = items[self._sel][2]
-        if action == "badge_mode":
+    def activate(self, mgr) -> None:
+        key = self.menu.key
+        s = self.settings
+        if key in _SETTINGS_GROUPS:
+            mgr.push(SettingsScreen(s, key, self.root))
+        elif key == "wifi":
+            mgr.push(WifiScreen(s))
+        elif key == "bluetooth":
+            s.bluetooth_enabled = not s.bluetooth_enabled
+            s.save()
+            self.message = "BT TRADES " + _on_off(s.bluetooth_enabled)
+            self.redraw(mgr)
+        elif key == "ir":
+            s.ir_enabled = not s.ir_enabled
+            s.save()
+            self.message = "IR TRADES " + _on_off(s.ir_enabled)
+            self.redraw(mgr)
+        elif key == "badge_mode":
             self._toggle_badge_mode(mgr)
-            return
-        if action == "keyboard":
-            self._toggle_keyboard(mgr)
-            return
-        if action == "bluetooth":
-            self._settings.bluetooth_enabled = not self._settings.bluetooth_enabled
-            self._settings.save()
-            self._message = "BT TRADES " + _on_off(self._settings.bluetooth_enabled)
-            self._draw(mgr._display, mgr)
-            return
-        if action == "ir":
-            self._settings.ir_enabled = not self._settings.ir_enabled
-            self._settings.save()
-            self._message = "IR TRADES " + _on_off(self._settings.ir_enabled)
-            self._draw(mgr._display, mgr)
-            return
-        if action == "wifi":
-            self._view = _VIEW_WIFI
-        elif action == "credits":
-            self._credits_boot = 0
-            self._view = _VIEW_CREDITS
-        elif action == "debug":
-            self._view = _VIEW_DEBUG
-            self._message = "DEBUG TOOLS"
-        elif action == "theme":
+        elif key == "keyboard":
+            from settings_state import KEYBOARDS
+            cur = s.keyboard
+            s.keyboard = KEYBOARDS[(KEYBOARDS.index(cur) + 1) % len(KEYBOARDS)] \
+                if cur in KEYBOARDS else KEYBOARDS[0]
+            s.save()
+            self.message = "KEYBOARD " + _keyboard_label(s)
+            self.redraw(mgr)
+        elif key == "text_size":
+            from settings_state import TEXT_LARGE, TEXT_NORMAL
+            s.text_size = TEXT_NORMAL if s.text_size == TEXT_LARGE else TEXT_LARGE
+            s.save()
+            ui.set_list_scale(2 if s.text_size == TEXT_LARGE else 1)
+            self.message = "TEXT " + s.text_size.upper()
+            self.redraw(mgr)               # shows the new size straight away
+        elif key == "credits":
+            mgr.push(CreditsScreen(s))
+        elif key == "debug":
+            mgr.push(DebugScreen(s, root=self.root))
+        elif key == "theme":
             from screens.theme_menu import ThemeMenuScreen
             mgr.push(ThemeMenuScreen())
-            return
-        elif action == "update":
+        elif key == "update":
             from screens.ota_update import OTAUpdateScreen
             mgr.push(OTAUpdateScreen())
-            return
-        elif action == "reset":
-            self._view = _VIEW_RESET
-            self._message = ""
-        self._draw(mgr._display, mgr)
-
-    def _cycle_ota_channel(self, mgr) -> None:
-        """Move to the next channel and forget the recorded OTA version.
-
-        Channel version counters are independent, so the new channel may be on a
-        lower number. Without clearing, the badge would refuse it as a downgrade
-        and silently never update."""
-        from settings_state import ota_channels
-        channels = ota_channels()
-        try:
-            nxt = channels[(channels.index(self._settings.ota_channel) + 1) % len(channels)]
-        except ValueError:
-            nxt = channels[0]
-        if nxt == self._settings.ota_channel:
-            self._message = "CHANNEL " + nxt.upper()
-            self._redraw_debug_current(mgr)
-            return
-        self._settings.ota_channel = nxt
-        self._settings.save()
-        cleared = False
-        try:
-            import ota
-            cleared = ota.clear_version()
-        except Exception:
-            pass
-        self._message = nxt.upper() + (" - VER CLEARED" if cleared else " - NO VER")
-        self._redraw_debug_current(mgr)
-
-    def _activate_debug(self, mgr) -> None:
-        if self._debug_sel == _DBG_OTA_CHANNEL:
-            self._cycle_ota_channel(mgr)
-        elif self._debug_sel == _DBG_ENABLE:
-            self._settings.debug_enabled = not self._settings.debug_enabled
-            self._settings.save()
-            if not self._settings.debug_enabled:
-                # Turned Debug off -> leave the now-hidden menu.
-                self._view = _VIEW_MENU
-                self._sel = 0
-                self._message = ""
-                self._draw(mgr._display, mgr)
-            else:
-                self._message = "DEBUG " + _on_off(self._settings.debug_enabled)
-                self._redraw_debug_current(mgr)
-        elif self._debug_sel == _DBG_BUTTONS:
-            self._button_sel = 0
-            self._view = _VIEW_BUTTONS
-            self._message = ""
-            self._draw(mgr._display, mgr)
-        elif self._debug_sel == _DBG_LEDS:
-            self._settings.debug_led_cycle_enabled = False
-            self._settings.save()
-            self._led_con = None   # LED test owns the strip; stop pet-LED driving
-            self._led_sel = 0
-            self._leds_all_off(mgr._leds)
-            self._view = _VIEW_LEDS
-            self._message = "LED TESTS"
-            self._draw(mgr._display, mgr)
-        elif self._debug_sel == _DBG_LEVEL:
-            self._edit_value = int(self._pet.level)
-            self._view = _VIEW_LEVEL
-            self._draw(mgr._display, mgr)
-        elif self._debug_sel == _DBG_EXP:
-            self._edit_value = int(self._pet.total_experience)
-            self._view = _VIEW_EXP
-            self._draw(mgr._display, mgr)
-        elif self._debug_sel == _DBG_RESOURCES:
-            self._resource_sel = 0
-            self._view = _VIEW_RESOURCES
-            self._message = ""
-            self._draw(mgr._display, mgr)
-        elif self._debug_sel == _DBG_CHARACTER:
-            self._open_character_picker(mgr)
-        elif self._debug_sel == _DBG_UNLOCK_ALL:
-            import character_manager
-            import pet_state
-            new = character_manager.unlock_all()
-            for cls in new:
-                pet_state.create_fresh(cls)   # same start as a Chi from a trade
-            self._message = ("UNLOCKED %d CHI'S" % len(new)) if new else "ALL UNLOCKED"
-            self._redraw_debug_current(mgr)
-        elif self._debug_sel == _DBG_LOCK_ALL:
-            import character_manager
-            locked = character_manager.lock_all_but_active()
-            self._message = ("LOCKED %d CHI'S" % locked) if locked else "NONE TO LOCK"
-            self._redraw_debug_current(mgr)
-        elif self._debug_sel == _DBG_VENDOR:
-            self._settings.vendor_mode_enabled = not self._settings.vendor_mode_enabled
-            self._settings.save()
-            self._message = "VENDOR " + _on_off(self._settings.vendor_mode_enabled)
-            self._redraw_debug_current(mgr)
-        elif self._debug_sel == _DBG_SPLASH:
-            self._open_splash_picker(mgr)
-        elif self._debug_sel == _DBG_BLUETOOTH:
-            from screens.ble_debug import BleDebugScreen
-            mgr.push(BleDebugScreen())
-            return
-        elif self._debug_sel == _DBG_FPS:
-            self._settings.fps_enabled = not self._settings.fps_enabled
-            self._settings.save()
-            import fps_counter
-            fps_counter.set_enabled(self._settings.fps_enabled)   # live effect
-            self._message = "FPS " + _on_off(self._settings.fps_enabled)
-            self._redraw_debug_current(mgr)
-
-    def _redraw_debug_current(self, mgr) -> None:
-        self._draw(mgr._display, mgr)
-
-    def _redraw_led_current(self, mgr) -> None:
-        self._draw(mgr._display, mgr)
-
-    def _adjust_editor(self, delta: int, display, mgr) -> None:
-        if self._view == _VIEW_LEVEL:
-            self._edit_value = max(0, min(MAX_LEVEL, self._edit_value + delta))
-        else:
-            self._edit_value = max(0, min(MAX_EXPERIENCE, self._edit_value + delta * _EXP_STEP))
-        self._draw(display, mgr)
-
-    def _save_editor(self, mgr) -> None:
-        if self._view == _VIEW_LEVEL:
-            self._pet.set_level(self._edit_value)
-            self._message = "LEVEL SAVED"
-        else:
-            self._pet.set_progress(self._edit_value)
-            self._message = "EXP SAVED"
-        self._apply_pet_leds(mgr)   # light the new level/XP (and level-up) now
-        self._view = _VIEW_DEBUG
-        self._draw(mgr._display, mgr)
-
-    def _apply_pet_leds(self, mgr) -> None:
-        """Show the just-saved level/XP on the RGB LEDs immediately by driving
-        the ConagotchiScreen beneath us (it shares our `_pet`)."""
-        con = self._con_screen(mgr)
-        if con is None:
-            return
-        con.refresh_leds(mgr._leds)
-        self._led_con = con   # keep ticking the animation from update()
-
-    def _con_screen(self, mgr):
-        from screens.conagotchi import ConagotchiScreen
-        for screen in reversed(mgr._stack):
-            if isinstance(screen, ConagotchiScreen):
-                return screen
-        return None
-
-    def _open_text_editor(self, target: str, mgr) -> None:
-        """Edit the SSID or password on the shared keyboard screen, coming back
-        to the Wi-Fi page afterwards."""
-        from screens.text_input import TextInputScreen
-        secret = target == "password"
-        value = self._settings.password if secret else self._settings.ssid
-        self._resume_view = _VIEW_WIFI
-        mgr.push(TextInputScreen("EDIT PASS" if secret else "EDIT SSID", value,
-                                 on_done=lambda v: self._save_text(target, v),
-                                 secret=secret))
-
-    def _save_text(self, target: str, value: str) -> None:
-        if target == "ssid":
-            self._settings.ssid = value
-        else:
-            self._settings.password = value
-        self._settings.save()
-        self._message = "SAVED"
-
-    def _toggle_keyboard(self, mgr) -> None:
-        from settings_state import KEYBOARDS
-        cur = self._settings.keyboard
-        nxt = KEYBOARDS[(KEYBOARDS.index(cur) + 1) % len(KEYBOARDS)] \
-            if cur in KEYBOARDS else KEYBOARDS[0]
-        self._settings.keyboard = nxt
-        self._settings.save()
-        self._message = "KEYBOARD " + _keyboard_label(self._settings)
-        self._draw(mgr._display, mgr)
+        elif key == "reset":
+            mgr.push(FactoryResetScreen())
 
     def _toggle_badge_mode(self, mgr) -> None:
         """Cycle the badge mode. Choosing Blinky enters it straight away.
@@ -787,147 +207,654 @@ class SettingsScreen(Screen):
         uses switch_to; BlinkyScreen clears the saved mode on exit so a badge
         cannot get stuck in it across reboots."""
         from settings_state import BADGE_MODES, MODE_BLINKY
-        modes = BADGE_MODES
+        s = self.settings
         try:
-            nxt = modes[(modes.index(self._settings.badge_mode) + 1) % len(modes)]
+            nxt = BADGE_MODES[(BADGE_MODES.index(s.badge_mode) + 1) % len(BADGE_MODES)]
         except ValueError:
-            nxt = modes[0]
-        self._settings.badge_mode = nxt
-        self._settings.save()
+            nxt = BADGE_MODES[0]
+        s.badge_mode = nxt
+        s.save()
         if nxt == MODE_BLINKY:
             from screens.blinky import BlinkyScreen
             mgr.switch_to(BlinkyScreen())
             return
-        self._message = "MODE " + nxt.upper()
-        self._draw(mgr._display, mgr)
+        self.message = "MODE " + _MODE_LABELS.get(nxt, nxt.upper())
+        self.redraw(mgr)
+
+
+# ── Wi-Fi ────────────────────────────────────────────────────────────────────
+
+class WifiScreen(_SettingsList):
+    title = "WI-FI"
+
+    def rows(self):
+        s = self.settings
+        status = wifi_status()
+        radio, linked = status if status else (s.wifi_enabled, False)
+        if linked:
+            connect = "LINKED"
+        else:
+            connect = "SAVED" if s.ssid and s.password else "ADD"
+        return [
+            ("Radio", _on_off(radio), "radio"),
+            ("Scan Networks", "FIND", "scan"),
+            ("Connect", connect, "connect"),
+            ("Net Check", "TEST", "check"),
+            ("SSID", ui.clip(s.ssid, 12) if s.ssid else "<empty>", "ssid"),
+            ("Password", _mask(s.password), "password"),
+            ("Disconnect", "DROP", "disconnect"),
+            ("Forget Network", "CLEAR", "forget"),
+        ]
+
+    def activate(self, mgr) -> None:
+        key = self.menu.key
+        s = self.settings
+        if key == "radio":
+            self._toggle_wifi()
+        elif key == "scan":
+            self._scan(mgr)
+            return
+        elif key == "connect":
+            self._connect()
+        elif key == "check":
+            self._check(mgr)
+        elif key in ("ssid", "password"):
+            from screens.text_input import TextInputScreen
+            secret = key == "password"
+            mgr.push(TextInputScreen("EDIT PASS" if secret else "EDIT SSID",
+                                     s.password if secret else s.ssid,
+                                     on_done=lambda v: self._save_text(key, v),
+                                     secret=secret))
+            return
+        elif key == "disconnect":
+            self.message = "DISCONNECTED" if disconnect_wifi() else "NOT CONNECTED"
+        elif key == "forget":
+            disconnect_wifi()
+            s.forget_network()
+            self.message = "FORGOTTEN"
+        self.redraw(mgr)
+
+    def _save_text(self, key, value) -> None:
+        if key == "ssid":
+            self.settings.ssid = value
+        else:
+            self.settings.password = value
+        self.settings.save()
+        self.message = "SAVED"
+
+    def picked_network(self, ssid) -> None:
+        """A network chosen on the scan page: save it and move to Password."""
+        s = self.settings
+        if ssid == WIFI_SSID:
+            s.password = WIFI_PASSWORD
+        elif ssid != s.ssid:
+            s.password = ""
+        s.ssid = ssid
+        s.trusted_bssid = ""
+        s.save()
+        disconnect_wifi()   # leave the old network; the radio stays on
+        self.menu.sel = 5   # Password
+        self.message = "SSID SAVED"
 
     def _toggle_wifi(self) -> None:
         # Toggle what the radio is actually doing: a scan may have powered it
         # up while the saved setting still said off.
+        s = self.settings
         status = wifi_status()
-        enable = not (status[0] if status else self._settings.wifi_enabled)
+        enable = not (status[0] if status else s.wifi_enabled)
         actual = set_wifi_enabled(enable)
         if actual is None:
-            self._message = "WIFI N/A"
+            self.message = "WIFI N/A"
             return
-        self._settings.wifi_enabled = actual
-        self._settings.save()
-        if actual == enable:
-            self._message = "WIFI " + _on_off(actual)
-        else:
-            self._message = "WIFI ERR"
+        s.wifi_enabled = actual
+        s.save()
+        self.message = ("WIFI " + _on_off(actual)) if actual == enable else "WIFI ERR"
 
     def _radio_on(self) -> bool:
         """Scanning and connecting need the radio. Turn it on the same way the
-        Radio row would, so the page and the saved setting both say ON, rather
-        than powering it up behind the user's back."""
+        Radio row would, so the page and the saved setting both say ON."""
         actual = set_wifi_enabled(True)
         if not actual:
-            self._message = "WIFI N/A" if actual is None else "WIFI ERR"
+            self.message = "WIFI N/A" if actual is None else "WIFI ERR"
             return False
-        if not self._settings.wifi_enabled:
-            self._settings.wifi_enabled = True
-            self._settings.save()
+        if not self.settings.wifi_enabled:
+            self.settings.wifi_enabled = True
+            self.settings.save()
         return True
 
-    def _scan_wifi(self, mgr) -> None:
+    def _scan(self, mgr) -> None:
         if not self._radio_on():
-            self._draw(mgr._display, mgr)
+            self.redraw(mgr)
             return
-        self._message = "SCANNING"
-        self._draw(mgr._display, mgr)
-        self._wifi_networks = tuple(scan_wifi_networks())
-        self._wifi_network_sel = 0
-        if self._wifi_networks:
-            self._view = _VIEW_WIFI_SCAN
-            self._message = ""
+        self.message = "SCANNING"
+        self.draw(mgr._display)
+        networks = tuple(scan_wifi_networks())
+        if networks:
+            self.message = ""
+            mgr.push(WifiScanScreen(self, networks))
         else:
-            self._message = "NO NETWORKS"
-        self._draw(mgr._display, mgr)
+            self.message = "NO NETWORKS"
+            self.redraw(mgr)
 
-    def _connect_wifi(self) -> None:
+    def _connect(self) -> None:
         if not self._radio_on():
             return
-        connected, code, bssid = connect_saved_wifi(
-            self._settings.ssid, self._settings.password, self._settings.trusted_bssid
-        )
-        self._settings.wifi_enabled = True
+        s = self.settings
+        connected, code, bssid = connect_saved_wifi(s.ssid, s.password, s.trusted_bssid)
+        s.wifi_enabled = True
         if connected and bssid:
-            self._settings.trusted_bssid = bssid
-        self._settings.save()
+            s.trusted_bssid = bssid
+        s.save()
         if connected:
-            self._message = "CONNECTED"
+            self.message = "CONNECTED"
         elif code == "OPEN":
-            self._message = "OPEN BLOCK"
+            self.message = "OPEN BLOCK"
         elif code == "WEAK":
-            self._message = "WEAK BLOCK"
+            self.message = "WEAK BLOCK"
         else:
-            self._message = code
+            self.message = code
 
-    def _check_connectivity(self, mgr) -> None:
-        self._message = "CHECKING"
-        self._draw(mgr._display, mgr)
+    def _check(self, mgr) -> None:
+        self.message = "CHECKING"
+        self.draw(mgr._display)
         ok, code, detail = check_connectivity()
         if ok:
-            self._message = "ONLINE"
+            self.message = "ONLINE"
         elif detail:
-            self._message = code + " " + detail
+            self.message = code + " " + detail
         else:
-            self._message = code
-        self._draw(mgr._display, mgr)
+            self.message = code
 
-    def _apply_led_tests(self, leds) -> None:
-        leds.set_alert(self._led_states[_LED_ALERT])
-        leds.set_raffle(self._led_states[_LED_RAFFLE])
+
+class WifiScanScreen(ListScreen):
+    title = "SELECT NETWORK"
+    empty = "NO NETWORKS"
+
+    def __init__(self, wifi, networks) -> None:
+        super().__init__()
+        self._wifi = wifi
+        self._networks = networks
+
+    def rows(self):
+        return [(ui.clip(n[0], 14), "{}dB".format(n[1]), n[0]) for n in self._networks]
+
+    def confirm(self):
+        return "USE"
+
+    def activate(self, mgr) -> None:
+        self._wifi.picked_network(self.menu.key)
+        mgr.pop()
+
+
+# ── Credits (and the Debug unlock) ───────────────────────────────────────────
+
+class CreditsScreen(Screen):
+    """Credits. Secret: BOOT x5 unlocks the Debug menu; SELECT leaves."""
+
+    accepts_disabled_buttons = True
+
+    def __init__(self, settings) -> None:
+        self._settings = settings
+        self._boots = 0
+        self._flash_until = 0
+        self._title = ui.Marquee()
+
+    async def enter(self, display, leds, mgr) -> None:
+        _draw_credits_page(display, self._title)
+
+    async def update(self, display, leds, mgr) -> None:
+        self._title.tick(display)
+        if self._flash_until and time.ticks_diff(time.ticks_ms(), self._flash_until) >= 0:
+            self._flash_until = 0
+            _draw_credits_page(display, self._title)
+
+    def handle_button(self, btn: str, mgr) -> None:
+        # BOOT is repurposed here, so SELECT is the way back out.
+        if btn == BOOT:
+            self._boots += 1
+            if self._boots >= _DEBUG_UNLOCK_PRESSES:
+                self._boots = 0
+                if not self._settings.debug_enabled:
+                    self._settings.debug_enabled = True
+                    self._settings.save()
+                self._flash_until = time.ticks_add(time.ticks_ms(), _FLASH_MS)
+                ui.dialog(mgr._display, "DEBUG", ("UNLOCKED",), kind="accent")
+        elif btn == SELECT:
+            mgr.pop()
+
+
+# ── Debug ────────────────────────────────────────────────────────────────────
+
+class DebugScreen(_SettingsList):
+    """The Debug top level (group None) or one of its groups."""
+
+    def __init__(self, settings, group=None, root=None) -> None:
+        super().__init__(settings)
+        self.group = group
+        self.root = root
+        self.title = "DEBUG" if group is None else _DEBUG_GROUPS[group][1]
+        self._clear_armed = None    # (row key, deadline) awaiting a 2nd START
+
+    def rows(self):
+        keys = _DEBUG_TOP if self.group is None else _DEBUG_GROUPS[self.group][2]
+        return [_debug_item(key, self.settings, self.pet) for key in keys]
+
+    def confirm(self):
+        return "OPEN" if self.menu.key in _DEBUG_GROUPS else "OK"
+
+    def handle_button(self, btn: str, mgr) -> None:
+        if btn in (LEFT, RIGHT, BOOT, SELECT):
+            self._clear_armed = None
+        super().handle_button(btn, mgr)
+
+    def activate(self, mgr) -> None:
+        global _PET_LEDS
+        key = self.menu.key
+        s = self.settings
+        if key in _DEBUG_GROUPS:
+            mgr.push(DebugScreen(s, key, self.root))
+            return
+        if key == "enable":
+            # Disable Debug Menu: hide it again (Credits -> BOOT x5 brings it
+            # back) and leave it.
+            s.debug_enabled = False
+            s.save()
+            if self.root is not None:
+                self.root.message = "DEBUG MENU HIDDEN"
+            mgr.pop()
+            return
+        if key == "vendor":
+            s.vendor_mode_enabled = not s.vendor_mode_enabled
+            s.save()
+            self.message = "VENDOR " + _on_off(s.vendor_mode_enabled)
+        elif key == "fps":
+            s.fps_enabled = not s.fps_enabled
+            s.save()
+            import fps_counter
+            fps_counter.set_enabled(s.fps_enabled)   # live effect
+            self.message = "FPS " + _on_off(s.fps_enabled)
+        elif key == "ota_channel":
+            self._cycle_ota_channel()
+        elif key == "unlock_all":
+            import character_manager
+            import pet_state
+            new = character_manager.unlock_all()
+            for cls in new:
+                pet_state.create_fresh(cls)   # same start as a Chi from a trade
+            self.message = ("UNLOCKED %d CHI'S" % len(new)) if new else "ALL UNLOCKED"
+        elif key == "lock_all":
+            import character_manager
+            locked = character_manager.lock_all_but_active()
+            self.message = ("LOCKED %d CHI'S" % locked) if locked else "NONE TO LOCK"
+        elif key in ("clear_stamps", "clear_challenges"):
+            self._clear(key)
+        elif key in ("level", "exp"):
+            mgr.push(ValueEditorScreen(key, self.pet, self))
+            return
+        elif key == "resources":
+            mgr.push(ResourcesScreen(s))
+            return
+        elif key == "character":
+            mgr._buttons.clear()   # START both opens and confirms the picker
+            mgr.push(ChiSelectScreen())
+            return
+        elif key == "splash":
+            mgr._buttons.clear()
+            mgr.push(SplashPickerScreen())
+            return
+        elif key == "buttons":
+            mgr.push(ButtonTestScreen(s))
+            return
+        elif key == "leds":
+            s.debug_led_cycle_enabled = False
+            s.save()
+            _PET_LEDS = None       # the LED test owns the strip
+            mgr.push(LedTestScreen(s, self))
+            return
+        elif key == "bluetooth":
+            from screens.ble_debug import BleDebugScreen
+            mgr.push(BleDebugScreen())
+            return
+        self.redraw(mgr)
+
+    def _clear(self, key: str) -> None:
+        """Clear Stamps / Clear Challenges: the first START arms, a second
+        START on the same row within _CLEAR_CONFIRM_MS clears."""
+        now = time.ticks_ms()
+        armed = self._clear_armed
+        if armed is None or armed[0] != key or time.ticks_diff(now, armed[1]) > 0:
+            self._clear_armed = (key, time.ticks_add(now, _CLEAR_CONFIRM_MS))
+            self.message = "START AGAIN TO CLEAR"
+            return
+        self._clear_armed = None
+        if key == "clear_stamps":
+            import stamp_manager
+            stamp_manager.clear()
+            self.message = "STAMPS CLEARED"
+        else:
+            import challenge_manager
+            challenge_manager.reset_progress()
+            self.message = "CHALLENGES CLEARED"
+
+    def _cycle_ota_channel(self) -> None:
+        """Move to the next channel and forget the recorded OTA version.
+
+        Channel version counters are independent, so the new channel may be on
+        a lower number. Without clearing, the badge would refuse it as a
+        downgrade and silently never update."""
+        from settings_state import ota_channels
+        s = self.settings
+        channels = ota_channels()
+        try:
+            nxt = channels[(channels.index(s.ota_channel) + 1) % len(channels)]
+        except ValueError:
+            nxt = channels[0]
+        if nxt == s.ota_channel:
+            self.message = "CHANNEL " + nxt.upper()
+            return
+        s.ota_channel = nxt
+        s.save()
+        cleared = False
+        try:
+            import ota
+            cleared = ota.clear_version()
+        except Exception:
+            pass
+        self.message = nxt.upper() + (" - VER CLEARED" if cleared else " - NO VER")
+
+
+class ValueEditorScreen(Screen):
+    """Level or EXP: LEFT/RIGHT adjust, START saves, BACK cancels."""
+
+    accepts_disabled_buttons = True
+
+    def __init__(self, kind, pet, opener) -> None:
+        self._kind = kind
+        self._pet = pet
+        self._opener = opener
+        self._value = int(pet.level) if kind == "level" else int(pet.total_experience)
+        self._title = ui.Marquee()
+
+    async def enter(self, display, leds, mgr) -> None:
+        self._draw(display)
+
+    async def update(self, display, leds, mgr) -> None:
+        self._title.tick(display)
+
+    def handle_button(self, btn: str, mgr) -> None:
+        if btn == BOOT or btn == SELECT:
+            self._opener.message = "CANCELLED"
+            mgr.pop()
+        elif btn == LEFT or btn == RIGHT:
+            step = 1 if btn == RIGHT else -1
+            if self._kind == "level":
+                self._value = max(0, min(MAX_LEVEL, self._value + step))
+            else:
+                self._value = max(0, min(MAX_EXPERIENCE, self._value + step * _EXP_STEP))
+            self._draw(mgr._display)
+        elif btn == START:
+            if self._kind == "level":
+                self._pet.set_level(self._value)
+                self._opener.message = "LEVEL SAVED"
+            else:
+                self._pet.set_progress(self._value)
+                self._opener.message = "EXP SAVED"
+            _light_pet_leds(mgr)   # show the new level/XP (and level-up) now
+            mgr.pop()
+
+    def _draw(self, display) -> None:
+        if self._kind == "level":
+            _draw_editor_page(display, "LEVEL", str(self._value),
+                              "0-{}".format(MAX_LEVEL), self._title)
+        else:
+            _draw_editor_page(display, "EXP", str(self._value),
+                              "0-{}".format(MAX_EXPERIENCE), self._title)
+
+
+class ResourcesScreen(_SettingsList):
+    """Pet Resources: START drains a resource, or fills an empty one."""
+
+    title = "PET RESOURCES"
+
+    def __init__(self, settings) -> None:
+        super().__init__(settings)
+        self.menu.value_fg = _resource_value_fg
+
+    def rows(self):
+        return [(label, value, i) for i, (label, value) in enumerate(_resource_rows(self.pet))]
+
+    def confirm(self):
+        return "FILL" if self.menu.item and self.menu.item[1] == "0%" else "DRAIN"
+
+    def activate(self, mgr) -> None:
+        label, attr = _RESOURCE_DEFS[self.menu.key]
+        if attr == "work":
+            label = getattr(self.pet, "work_name", "Work")
+        drain = getattr(self.pet, attr, 0) > 0
+        setattr(self.pet, attr, 0.0 if drain else 100.0)
+        self.pet.save()
+        # Reflect the change on the red Alert LED immediately via the pet
+        # screen beneath us (it shares this pet).
+        con = _con_screen(mgr)
+        if con is not None:
+            con._update_alert(mgr._leds)
+        self.message = ("DRAINED " if drain else "FILLED ") + ui.clip(label.upper(), 12)
+        self.redraw(mgr)
+
+
+class ChiSelectScreen(ListScreen):
+    """Pick any Chi to make active (unlocking it); returns to the pet."""
+
+    title = "CHI SELECT"
+    empty = "NONE FOUND"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._first = True
+
+    def rows(self):
+        import character_manager
+        active = character_manager.get_active().id
+        chars = character_manager.all_characters()
+        if self._first:
+            self._first = False
+            for i, c in enumerate(chars):
+                if c.id == active:
+                    self.menu.sel = i
+        return [(ui.clip(c.name, 14), "ACTIVE" if c.id == active else "SET", c.id)
+                for c in chars]
+
+    def confirm(self):
+        return "SET"
+
+    def activate(self, mgr) -> None:
+        import character_manager
+        cls = character_manager.find(self.menu.key)
+        if cls is None:
+            return
+        character_manager.save(cls)   # persist active + unlock the chosen character
+        from screens.conagotchi import ConagotchiScreen
+        mgr.switch_to(ConagotchiScreen())
+
+
+class SplashPickerScreen(ListScreen):
+    """Choose the boot splash, or Random (a regular one each boot)."""
+
+    title = "SPLASH"
+    empty = "NONE FOUND"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._first = True
+
+    def rows(self):
+        import splash_manager
+        options = [""] + splash_manager.all_names()
+        current = splash_manager.get_selected()
+        rows = []
+        for i, name in enumerate(options):
+            if not name:
+                label, tag = "Random", "AUTO"
+            else:
+                label = splash_manager.label_for(name)
+                tag = "SPECIAL" if splash_manager.is_special(name) else "SET"
+            if name == current:
+                tag = "ACTIVE"
+                if self._first:
+                    self.menu.sel = i
+            rows.append((ui.clip(label, 14), tag, name))
+        self._first = False
+        return rows
+
+    def confirm(self):
+        return "SET"
+
+    def activate(self, mgr) -> None:
+        import splash_manager
+        name = self.menu.key
+        splash_manager.set_selected(name)   # "" = random/auto each boot
+        self.message = "AUTO" if not name else splash_manager.label_for(name)
+        self.redraw(mgr)
+
+
+class ButtonTestScreen(_SettingsList):
+    """Choose how long the live button test runs."""
+
+    title = "BUTTON TEST"
+    confirm_verb = "TEST"
+
+    def rows(self):
+        return [("{} SECONDS".format(d), None, d) for d in _BTN_DURATIONS]
+
+    def activate(self, mgr) -> None:
+        mgr.push(ButtonLiveScreen(self.menu.key))
+
+
+class ButtonLiveScreen(Screen):
+    """Each button's row lights while held and reads DONE once pressed. Every
+    press is part of the test (nothing navigates); it ends when time runs out."""
+
+    accepts_disabled_buttons = True
+
+    def __init__(self, seconds) -> None:
+        self._seconds = seconds
+        self._end = 0
+        self._tested = set()
+        self._sig = None
+        self._title = ui.Marquee()
+
+    async def enter(self, display, leds, mgr) -> None:
+        self._end = time.ticks_add(time.ticks_ms(), self._seconds * 1000)
+        _draw_button_live(display, (), self._tested, self._seconds, self._title)
+
+    async def update(self, display, leds, mgr) -> None:
+        self._title.tick(display)
+        remaining = time.ticks_diff(self._end, time.ticks_ms())
+        if remaining <= 0:
+            mgr.pop()
+            return
+        held = tuple(name for name, _label in _BTN_LIVE if mgr._buttons.raw_pressed(name))
+        for name in held:
+            self._tested.add(name)
+        secs = remaining // 1000 + 1
+        sig = (secs, held, frozenset(self._tested))
+        if sig != self._sig:
+            self._sig = sig
+            _draw_button_live(display, held, self._tested, secs, self._title)
+
+    def handle_button(self, btn: str, mgr) -> None:
+        self._tested.add(btn)
+
+
+class LedTestScreen(_SettingsList):
+    """Toggle each LED; the pet's LEDs are paused while this owns the strip."""
+
+    title = "LED TESTS"
+
+    def __init__(self, settings, opener) -> None:
+        super().__init__(settings)
+        self._opener = opener
+        self._states = [False] * (NUM_RGB_LEDS + 2)
+        self._leds = None
+
+    async def enter(self, display, leds, mgr) -> None:
+        self._leds = leds
+        self._all_off()
+        self.message = "LED TESTS"
+        await super().enter(display, leds, mgr)
+
+    async def exit(self, display, leds, mgr) -> None:
+        self._all_off()
+
+    async def update(self, display, leds, mgr) -> None:
+        await ListScreen.update(self, display, leds, mgr)   # no pet-LED ticking
+
+    def rows(self):
+        return [(label, value, i) for i, (label, value) in enumerate(_led_test_rows(self._states))]
+
+    def back(self, mgr) -> None:
+        self._all_off()
+        self._opener.message = "LEDS OFF"
+        mgr.pop()
+
+    def activate(self, mgr) -> None:
+        idx = self.menu.key
+        if idx == _LED_EXIT:
+            self.back(mgr)
+            return
+        if idx == _LED_ALL_OFF:
+            self._all_off()
+            self.message = "ALL OFF"
+        else:
+            self._states[idx] = not self._states[idx]
+            self._apply()
+            self.message = _led_label(idx).upper() + " " + _on_off(self._states[idx])
+        self.redraw(mgr)
+
+    def _apply(self) -> None:
+        leds = self._leds
+        leds.set_alert(self._states[_LED_ALERT])
+        leds.set_raffle(self._states[_LED_RAFFLE])
         for idx in range(NUM_RGB_LEDS):
-            state_idx = _LED_RGB_START + idx
             color = _LED_TEST_COLORS[idx % len(_LED_TEST_COLORS)]
-            leds.rgb[idx] = color if self._led_states[state_idx] else (0, 0, 0)
+            leds.rgb[idx] = color if self._states[_LED_RGB_START + idx] else (0, 0, 0)
         leds.rgb.write()
 
-    def _leds_all_off(self, leds) -> None:
-        for idx in range(len(self._led_states)):
-            self._led_states[idx] = False
-        leds.all_off()
+    def _all_off(self) -> None:
+        for idx in range(len(self._states)):
+            self._states[idx] = False
+        if self._leds is not None:
+            self._leds.all_off()
 
-    def _draw(self, display, mgr) -> None:
-        if self._view == _VIEW_WIFI:
-            _draw_wifi_page(display, self._settings, self._wifi_sel, self._message)
-        elif self._view == _VIEW_WIFI_SCAN:
-            _draw_wifi_scan_page(display, self._wifi_networks, self._wifi_network_sel)
-        elif self._view == _VIEW_CREDITS:
-            _draw_credits_page(display)
-        elif self._view == _VIEW_DEBUG:
-            _draw_debug_page(display, self._settings, self._pet, self._debug_sel,
-                             self._message)
-        elif self._view == _VIEW_BUTTONS:
-            _draw_button_test_page(display, self._button_sel)
-        elif self._view == _VIEW_BUTTON_LIVE:
-            _draw_button_live(display, (), self._button_tested, self._button_dur)
-        elif self._view == _VIEW_LEDS:
-            _draw_led_test_page(display, self._led_states, self._led_sel, self._message)
-        elif self._view == _VIEW_LEVEL:
-            _draw_editor_page(display, "LEVEL", str(self._edit_value), "0-{}".format(MAX_LEVEL))
-        elif self._view == _VIEW_EXP:
-            _draw_editor_page(display, "EXP", str(self._edit_value), "0-{}".format(MAX_EXPERIENCE))
-        elif self._view == _VIEW_RESOURCES:
-            _draw_resources_page(display, self._pet, self._resource_sel, self._message)
-        elif self._view == _VIEW_CHARACTER:
-            _draw_character_page(display, self._characters, self._character_sel,
-                                 self._active_char_id)
-        elif self._view == _VIEW_SPLASH:
-            _draw_splash_page(display, self._splash_options, self._splash_sel,
-                              self._message)
-        elif self._view == _VIEW_RESET:
-            _draw_reset_page(display)
-        else:
-            count = len(_main_menu_items(self._settings))
-            if self._sel >= count:
-                self._sel = count - 1
-            self._menu_top = ui.clamp_scroll(self._sel, self._menu_top, count)
-            _draw_menu(display, self._settings, self._sel, self._menu_top,
-                       self._message)
 
+class FactoryResetScreen(Screen):
+    accepts_disabled_buttons = True
+
+    def __init__(self) -> None:
+        self._title = ui.Marquee()
+
+    async def enter(self, display, leds, mgr) -> None:
+        _draw_reset_page(display, self._title)
+
+    async def update(self, display, leds, mgr) -> None:
+        self._title.tick(display)
+
+    def handle_button(self, btn: str, mgr) -> None:
+        if btn == BOOT or btn == SELECT:
+            mgr.pop()
+        elif btn == START:
+            _draw_reset_progress(mgr._display)
+            try:
+                import factory_reset
+                factory_reset.wipe()
+            except Exception:
+                pass
+            import machine
+            time.sleep_ms(700)
+            machine.reset()
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _load_pet(mgr):
     try:
@@ -941,28 +868,68 @@ def _load_pet(mgr):
     return PetState(character_manager.get_active())
 
 
-def _main_menu_items(settings: BadgeSettings):
-    """Top-level Settings rows as (label, value, action).
+def _con_screen(mgr):
+    from screens.conagotchi import ConagotchiScreen
+    for screen in reversed(mgr._stack):
+        if isinstance(screen, ConagotchiScreen):
+            return screen
+    return None
 
-    The Debug menu is hidden until unlocked (settings.debug_enabled), which is
-    turned on by the BOOT x5 combo on the Credits screen."""
-    import theme
-    items = [
-        ("Wi-Fi", _wifi_label(settings), "wifi"),
-        ("Bluetooth", _on_off(settings.bluetooth_enabled), "bluetooth"),
-        ("IR", _on_off(settings.ir_enabled), "ir"),
-        ("Badge Mode", _badge_mode_label(settings), "badge_mode"),
-        ("Keyboard", _keyboard_label(settings), "keyboard"),
-        ("Credits", "VIEW", "credits"),
-    ]
-    if settings.debug_enabled:
-        items.append(("Debug", "VIEW", "debug"))
-    items.append(("Theme", theme.name().upper(), "theme"))
-    from config import OTA_BASE_URL
-    if OTA_BASE_URL:
-        items.append(("Update", _ota_version_label(), "update"))
-    items.append(("Factory Reset", "CLEAR", "reset"))
-    return items
+
+def _light_pet_leds(mgr) -> None:
+    """Show a just-saved level/XP on the RGB LEDs now, by driving the pet
+    screen beneath Settings, and keep animating them while Settings is open."""
+    global _PET_LEDS
+    con = _con_screen(mgr)
+    if con is None:
+        return
+    con.refresh_leds(mgr._leds)
+    _PET_LEDS = con
+
+
+def _settings_rows(settings: BadgeSettings, group=None):
+    """Settings rows as (label, value, key): the top level (group None) or
+    one group. Debug is hidden until unlocked (Credits -> BOOT x5); Update is
+    hidden when no OTA host is configured."""
+    keys = _SETTINGS_TOP if group is None else _SETTINGS_GROUPS[group][2]
+    rows = []
+    for key in keys:
+        if key == "debug" and not settings.debug_enabled:
+            continue
+        if key == "update":
+            from config import OTA_BASE_URL
+            if not OTA_BASE_URL:
+                continue
+        rows.append(_settings_item(key, settings))
+    return rows
+
+
+def _settings_item(key: str, settings: BadgeSettings):
+    """One Settings row as (label, value, key)."""
+    if key in _SETTINGS_GROUPS:
+        return (_SETTINGS_GROUPS[key][0], "VIEW", key)
+    if key == "wifi":
+        return ("Wi-Fi", _wifi_label(settings), key)
+    if key == "bluetooth":
+        return ("Bluetooth", _on_off(settings.bluetooth_enabled), key)
+    if key == "ir":
+        return ("IR", _on_off(settings.ir_enabled), key)
+    if key == "badge_mode":
+        return ("Badge Mode", _badge_mode_label(settings), key)
+    if key == "theme":
+        import theme
+        return ("Theme", theme.name().upper(), key)
+    if key == "keyboard":
+        return ("Keyboard", _keyboard_label(settings), key)
+    if key == "text_size":
+        return ("Text Size", getattr(settings, "text_size", "normal").upper(), key)
+    if key == "update":
+        return ("Update", _ota_version_label(), key)
+    if key == "reset":
+        return ("Factory Reset", "CLEAR", key)
+    if key == "credits":
+        return ("Credits", "VIEW", key)
+    return ("Debug", "VIEW", key)
 
 
 def _ota_version_label() -> str:
@@ -986,63 +953,43 @@ def _keyboard_label(settings: BadgeSettings) -> str:
 
 
 def _badge_mode_label(settings: BadgeSettings) -> str:
-    """CONAGOTCHI or BLINKY, clipped to the width the row value allows."""
-    return ui.clip(settings.badge_mode.upper(), 12) if settings.badge_mode else "-"
+    """CHI or BLINKY: short enough that "Badge Mode" fits beside it."""
+    mode = settings.badge_mode
+    return _MODE_LABELS.get(mode, ui.clip(mode.upper(), 8)) if mode else "-"
 
 
-def _screen(display, title) -> None:
-    ui.screen(display, title, marquee=_TITLE)
+def _debug_rows(settings: BadgeSettings, pet: PetState, group=None):
+    """The rows of the Debug top level (group None) or of one group."""
+    keys = _DEBUG_TOP if group is None else _DEBUG_GROUPS[group][2]
+    return [_debug_item(key, settings, pet) for key in keys]
 
 
-def _draw_list_page(display, title, items, selected, confirm=None,
-                    message=None, empty=None, value_fg=None) -> None:
-    """Standard Settings list page: title bar + windowed ui.list_view + the
-    message slot + controls.
-
-    Scrolls automatically when the list outgrows the screen; the window is
-    derived from `selected`, so nav handlers just update the index and redraw.
-    """
-    _screen(display, title)
-    if not items:
-        ui.status(display, empty or "NONE", 104, "warning")
-    else:
-        top = ui.window_top(selected, len(items))
-        ui.list_view(display, items, selected, top, value_fg=value_fg)
-    ui.message(display, message)
-    ui.controls(display, confirm)
-
-
-def _draw_menu(display, settings: BadgeSettings, selected: int, top: int,
-               message: str = "") -> None:
-    _screen(display, "SETTINGS")
-    ui.list_view(display, _main_menu_items(settings), selected, top)
-    ui.message(display, message)
-    ui.controls(display, "OK")
-
-
-def _draw_debug_page(display, settings: BadgeSettings, pet: PetState,
-                     selected: int, message: str) -> None:
-    _draw_list_page(display, "DEBUG", _debug_rows(settings, pet), selected,
-                    confirm="OK", message=message)
-
-
-def _debug_rows(settings: BadgeSettings, pet: PetState):
-    return (
-        ("Debug", _on_off(settings.debug_enabled)),
-        ("Buttons", "TEST"),
-        ("LED Test", "VIEW"),
-        ("Level", str(int(pet.level))),
-        ("EXP", str(int(pet.total_experience))),
-        ("Pet Resources", "VIEW"),
-        ("Character", ui.clip(pet.name.upper(), 10)),
-        ("Unlock All Chi's", _chi_count()),
-        ("Lock All Chi's", "RUN"),
-        ("Vendor Mode", _on_off(settings.vendor_mode_enabled)),
-        ("Splash", _splash_value()),
-        ("Bluetooth", "VIEW"),
-        ("FPS", _on_off(settings.fps_enabled)),
-        ("Update Channel", settings.ota_channel.upper() or "-"),
-    )
+def _debug_item(key: str, settings: BadgeSettings, pet: PetState):
+    """One Debug row as (label, value, key)."""
+    if key in _DEBUG_GROUPS:
+        return (_DEBUG_GROUPS[key][0], "VIEW", key)
+    labels = {
+        "enable": ("Disable Debug Menu", None),
+        "vendor": ("Vendor Mode", _on_off(settings.vendor_mode_enabled)),
+        "level": ("Level", str(int(pet.level))),
+        "exp": ("EXP", str(int(pet.total_experience))),
+        "resources": ("Pet Resources", "VIEW"),
+        "character": ("Chi Select", ui.clip(pet.name.upper(), 10)),
+        "lock_all": ("Lock All Chi's", "RUN"),
+        "clear_stamps": ("Clear Stamps", "RUN"),
+        "clear_challenges": ("Clear Challenges", "RUN"),
+        "buttons": ("Buttons", "TEST"),
+        "leds": ("LED Test", "VIEW"),
+        "bluetooth": ("Bluetooth", "VIEW"),
+        "fps": ("FPS", _on_off(settings.fps_enabled)),
+        "ota_channel": ("Update Channel", settings.ota_channel.upper() or "-"),
+    }
+    if key == "unlock_all":
+        return ("Unlock All Chi's", _chi_count(), key)
+    if key == "splash":
+        return ("Splash", _splash_value(), key)
+    label, value = labels[key]
+    return (label, value, key)
 
 
 def _chi_count() -> str:
@@ -1053,41 +1000,13 @@ def _chi_count() -> str:
 
 
 def _splash_value() -> str:
-    """Debug-row value for the Splash item: the current selection's label, or
-    AUTO when no explicit splash is stored (random each boot)."""
+    """Current splash label, or AUTO when none is stored (random each boot)."""
     try:
         import splash_manager
         sel = splash_manager.get_selected()
         return splash_manager.label_for(sel) if sel else "AUTO"
     except Exception:
         return "AUTO"
-
-
-def _draw_button_test_page(display, selected: int) -> None:
-    """Duration picker for the live button test."""
-    items = ["{} SECONDS".format(d) for d in _BTN_DURATIONS]
-    _draw_list_page(display, "BUTTON TEST", items, selected, confirm="TEST")
-
-
-def _draw_button_live(display, held, tested, secs: int) -> None:
-    """Live per-button test: a button's row lights while it is held, and its
-    value reads DONE once it has been pressed at all."""
-    import theme
-    th = theme.get()
-    _screen(display, "BUTTON TEST")
-    for i, (name, label) in enumerate(_BTN_LIVE):
-        ui.row(display, th.row_top + i * th.row_h, label,
-               "DONE" if name in tested else "-",
-               fill="success" if name in held else None,
-               value_fg=lambda v: th.success if v == "DONE" else th.muted)
-    ui.message(display, "{}s  TESTED {}/{}".format(secs, len(tested), len(_BTN_LIVE)),
-               "muted")
-    ui.bottom_line(display, "TESTING...")
-
-
-def _draw_led_test_page(display, states, selected: int, message: str) -> None:
-    _draw_list_page(display, "LED TESTS", _led_test_rows(states), selected,
-                    confirm="OK", message=message)
 
 
 def _led_test_rows(states):
@@ -1114,27 +1033,6 @@ def _led_label(idx: int) -> str:
     return "Exit"
 
 
-def _draw_editor_page(display, title: str, value: str, bounds: str) -> None:
-    _screen(display, title)
-    ui.value_picker(display, value, hint="LEFT/RIGHT ADJUSTS", detail=bounds)
-    ui.controls(display, "SAVE")
-
-
-def _draw_reset_page(display) -> None:
-    _screen(display, "FACTORY RESET")
-    ui.status(display, "ERASE ALL DATA?", 58, "danger")
-    ui.paragraph(display, "Character, stamps, pet state and settings "
-                 "will be wiped and the badge will reboot.", 82, line_h=16)
-    ui.status(display, "CANNOT BE UNDONE", 172, "danger")
-    ui.controls(display, "WIPE")
-
-
-def _draw_reset_progress(display) -> None:
-    ui.clear(display)
-    ui.text_lines(display, (("RESETTING", "danger"), ("REBOOTING...", "muted")),
-                  104, line_h=24)
-
-
 def _resource_rows(pet):
     """(label, "NN%") rows for the Pet Resources editor; Work uses work_name."""
     rows = []
@@ -1157,72 +1055,52 @@ def _resource_value_fg(value: str) -> int:
         return th.muted
 
 
-def _draw_resources_page(display, pet, selected: int, message: str) -> None:
-    rows = _resource_rows(pet)
-    # START drains a non-empty resource, fills an empty one.
-    empty = rows[selected][1] == "0%"
-    _draw_list_page(display, "PET RESOURCES", rows, selected,
-                    confirm="FILL" if empty else "DRAIN", message=message,
-                    value_fg=_resource_value_fg)
+# ── Pages that are not lists ─────────────────────────────────────────────────
 
-
-def _draw_character_page(display, characters, selected: int, active_id: str) -> None:
-    items = [(ui.clip(c.name, 14), "ACTIVE" if c.id == active_id else "SET")
-             for c in characters]
-    _draw_list_page(display, "CHARACTER", items, selected,
-                    confirm="SET", empty="NONE FOUND")
-
-
-def _draw_splash_page(display, options, selected: int, message: str) -> None:
-    import splash_manager
-    current = splash_manager.get_selected()
-    items = []
-    for name in options:
-        if not name:
-            label, tag = "Random", "AUTO"
-        else:
-            label = splash_manager.label_for(name)
-            tag = "SPECIAL" if splash_manager.is_special(name) else "SET"
-        if name == current:
-            tag = "ACTIVE"
-        items.append((ui.clip(label, 14), tag))
-    _draw_list_page(display, "SPLASH", items, selected,
-                    confirm="SET", message=message, empty="NONE FOUND")
-
-
-def _draw_wifi_page(display, settings: BadgeSettings, selected: int, message: str) -> None:
-    status = wifi_status()
-    radio, linked = status if status else (settings.wifi_enabled, False)
-    if linked:
-        connect = "LINKED"
-    else:
-        connect = "SAVED" if settings.ssid and settings.password else "ADD"
-    rows = [
-        ("Radio", _on_off(radio)),
-        ("Scan Networks", "FIND"),
-        ("Connect", connect),
-        ("Net Check", "TEST"),
-        ("SSID", ui.clip(settings.ssid, 12) if settings.ssid else "<empty>"),
-        ("Password", _mask(settings.password)),
-        ("Disconnect", "DROP"),
-        ("Forget Network", "CLEAR"),
-    ]
-    _draw_list_page(display, "WI-FI", rows, selected, confirm="OK", message=message)
-
-
-def _draw_wifi_scan_page(display, networks, selected: int) -> None:
-    items = [(ui.clip(n[0], 14), "{}dB".format(n[1])) for n in networks]
-    _draw_list_page(display, "SELECT NETWORK", items, selected,
-                    confirm="USE", empty="NO NETWORKS")
-
-
-def _draw_credits_page(display) -> None:
-    _screen(display, "CREDITS")
+def _draw_credits_page(display, marquee=None) -> None:
+    ui.screen(display, "CREDITS", marquee=marquee)
     ui.text_lines(display, ("OzSec 2026", ("Conagotchi", "muted")), 56, line_h=20)
     ui.text_lines(display, ("Contributors:", ("rufflabs", "muted"),
                             ("baum", "muted"), ("Claude and Codex", "muted")),
                   108, line_h=20)
     ui.controls(display)
+
+
+def _draw_editor_page(display, title: str, value: str, bounds: str, marquee=None) -> None:
+    ui.screen(display, title, marquee=marquee)
+    ui.value_picker(display, value, hint="LEFT/RIGHT ADJUSTS", detail=bounds)
+    ui.controls(display, "SAVE")
+
+
+def _draw_button_live(display, held, tested, secs: int, marquee=None) -> None:
+    """A button's row lights while it is held, and reads DONE once pressed."""
+    import theme
+    th = theme.get()
+    ui.screen(display, "BUTTON TEST", marquee=marquee)
+    # Normal-size rows whatever the menu text size: all five buttons must fit.
+    for i, (name, label) in enumerate(_BTN_LIVE):
+        ui.row(display, th.row_top + i * th.row_h, label,
+               "DONE" if name in tested else "-",
+               fill="success" if name in held else None,
+               value_fg=lambda v: th.success if v == "DONE" else th.muted, scale=1)
+    ui.message(display, "{}s  TESTED {}/{}".format(secs, len(tested), len(_BTN_LIVE)),
+               "muted")
+    ui.bottom_line(display, "TESTING...")
+
+
+def _draw_reset_page(display, marquee=None) -> None:
+    ui.screen(display, "FACTORY RESET", marquee=marquee)
+    ui.status(display, "ERASE ALL DATA?", 58, "danger")
+    ui.paragraph(display, "Character, stamps, pet state and settings "
+                 "will be wiped and the badge will reboot.", 82, line_h=16)
+    ui.status(display, "CANNOT BE UNDONE", 172, "danger")
+    ui.controls(display, "WIPE")
+
+
+def _draw_reset_progress(display) -> None:
+    ui.clear(display)
+    ui.text_lines(display, (("RESETTING", "danger"), ("REBOOTING...", "muted")),
+                  104, line_h=24)
 
 
 def _on_off(enabled: bool) -> str:

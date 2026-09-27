@@ -18,6 +18,7 @@ active theme with no local colors here.
 import ui
 
 from buttons import BOOT, LEFT, RIGHT, SELECT, START
+from menu import ListScreen
 from screen_manager import Screen
 
 
@@ -56,62 +57,21 @@ def _grouped_challenges():
     return rows
 
 
-class ChallengeMenuScreen(Screen):
-    """One scrolling list of every reachable challenge, grouped by character."""
+class ChallengeMenuScreen(ListScreen):
+    """One scrolling list of every reachable challenge, grouped by character.
+    Headings are skipped by the shared Menu; rows carry their challenge."""
 
-    def __init__(self) -> None:
-        self._sel = 0
-        self._top = 0
-        self._rows = []
+    title = "CHALLENGES"
+    empty = "NO QUESTS YET"
 
-    async def enter(self, display, leds, mgr) -> None:
-        self._rows = _grouped_challenges()
-        self._sel = self._first_selectable() if not self._valid_sel() else self._sel
-        self._top = ui.clamp_scroll(self._sel, self._top, len(self._rows))
-        self._draw(display)
+    def rows(self):
+        return [row if isinstance(row, ui.Header) else (row.name, None, row)
+                for row in _grouped_challenges()]
 
-    async def resume(self, display, leds, mgr) -> None:
-        await self.enter(display, leds, mgr)
-
-    # ── selection, stepping over headings ────────────────────────────────────
-
-    def _valid_sel(self):
-        return (0 <= self._sel < len(self._rows)
-                and ui.is_selectable(self._rows[self._sel]))
-
-    def _first_selectable(self):
-        for i, row in enumerate(self._rows):
-            if ui.is_selectable(row):
-                return i
-        return 0
-
-    def _move(self, delta, display):
-        count = len(self._rows)
-        if not count:
+    def activate(self, mgr) -> None:
+        cls = self.menu.key
+        if cls is None or isinstance(cls, (str, ui.Header)):
             return
-        index = self._sel
-        for _ in range(count):
-            index = (index + delta) % count
-            if ui.is_selectable(self._rows[index]):
-                self._sel = index
-                break
-        self._top = ui.clamp_scroll(self._sel, self._top, count)
-        self._draw(display)
-
-    def handle_button(self, btn: str, mgr) -> None:
-        if btn == BOOT or btn == SELECT:
-            mgr.pop()
-        elif btn == LEFT:
-            self._move(-1, mgr._display)
-        elif btn == RIGHT:
-            self._move(1, mgr._display)
-        elif btn == START:
-            self._open(mgr)
-
-    def _open(self, mgr):
-        if not self._valid_sel():
-            return
-        cls = self._rows[self._sel]
         import challenge_manager
         if (getattr(cls, "interactive", False)
                 and not challenge_manager.is_completed(cls.id)):
@@ -119,17 +79,6 @@ class ChallengeMenuScreen(Screen):
             mgr.push(LabScreen(cls))
         else:
             mgr.push(ChallengeDetailScreen(cls))
-
-    def _draw(self, display) -> None:
-        ui.screen(display, "CHALLENGES")
-        if not self._rows:
-            ui.status(display, "NO QUESTS YET", 104, "muted")
-            ui.controls(display)
-            return
-        items = [row if isinstance(row, ui.Header) else row.name
-                 for row in self._rows]
-        ui.list_view(display, items, self._sel, self._top)
-        ui.controls(display, "OPEN")
 
 
 _SOURCE_Y = 54

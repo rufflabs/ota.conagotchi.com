@@ -2,8 +2,8 @@
 
 Presentation is standardised across campaigns: the lab's title fills the title
 bar, the root menu carries its metadata in the right-hand value column, and every
-list is drawn by `ui.list_view`, so labs look like the rest of the badge instead
-of a hand-placed layout of their own.
+list is a shared `menu.Menu` (selection, scrolling rows), so labs look and behave
+like the rest of the badge instead of a hand-placed layout of their own.
 
 Root menu values are the metadata: difficulty, how much evidence has been read,
 and how many hints have been spent. The parameter list shows each field's current
@@ -20,8 +20,8 @@ class LabScreen(Screen):
         self._cls = challenge_cls
         self._lab = None
         self._view = "root"
-        self._sel = 0
-        self._top = 0
+        from menu import Menu
+        self._menu = Menu()           # the shared list behaviour
         self._scroll = 0
         self._lines = []
         self._return = "root"
@@ -31,6 +31,26 @@ class LabScreen(Screen):
         self._locked = False
         self._title = getattr(challenge_cls, "name", "LAB")
         self._marquee = ui.Marquee()
+
+    # The list's selection and window live in the shared Menu.
+    @property
+    def _sel(self):
+        return self._menu.sel
+
+    @_sel.setter
+    def _sel(self, value):
+        self._menu.sel = value
+
+    @property
+    def _top(self):
+        return self._menu.top
+
+    @_top.setter
+    def _top(self, value):
+        self._menu.top = value
+
+    def _list_rows(self):
+        return [(label, value, key) for key, label, value in self._items()]
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -69,6 +89,8 @@ class LabScreen(Screen):
 
     async def update(self, display, leds, mgr) -> None:
         self._marquee.tick(display)
+        if not self._locked and self._view in ("root", "evidence", "fields", "actions"):
+            self._menu.tick(display)      # scroll a too-long selected row
 
     def _heading(self):
         return self._field[1] if self._view == "field" else self._title
@@ -142,9 +164,10 @@ class LabScreen(Screen):
                 return
             self._view, self._sel, self._top = "root", 0, 0
         elif btn in (LEFT, RIGHT):
-            count = len(self._items())
-            self._sel = (self._sel + (1 if btn == RIGHT else -1)) % count
-            self._top = ui.clamp_scroll(self._sel, self._top, count)
+            # Only the rows that changed are repainted, like every list.
+            self._menu.set_rows(self._list_rows())
+            self._menu.step(mgr._display, 1 if btn == RIGHT else -1)
+            return
         elif btn == START:
             self._activate(mgr)
         self._draw(mgr._display)
@@ -159,7 +182,7 @@ class LabScreen(Screen):
                 mgr.pop()
                 return
             self._view, self._sel = self._return, self._return_sel
-            self._top = ui.clamp_scroll(self._sel, self._top, len(self._items()))
+            self._menu.set_rows(self._list_rows())
 
     def _handle_field(self, btn):
         options = self._field[2]
@@ -232,6 +255,6 @@ class LabScreen(Screen):
             ui.controls(display, "APPLY")
             return
 
-        items = [(label, value) for _key, label, value in self._items()]
-        ui.list_view(display, items, self._sel, self._top)
+        self._menu.set_rows(self._list_rows())
+        self._menu.draw(display)
         ui.controls(display, "RUN" if self._view == "actions" else "OPEN")

@@ -83,12 +83,6 @@ _MENU_BTNS = (
     ("challenges",    99,   0,  44,  44, "Chal",  "screen:challenges"),  # btn_laptop
 )
 
-# Extra ring button shown only when Vendor Badge mode is enabled
-# (Settings -> Debug -> Vendor Mode). Slotted into the gap between Settings
-# (~10–11 o'clock) and Pet (12 o'clock) so the clockwise cycle flows
-# settings -> vendor -> pet.
-_VENDOR_BTN = ("vendor", 56, 23, 48, 16, "Ven", "screen:vendor")
-
 _PRESS_MS  = 150   # ms to show pressed state before activating
 _CHALLENGE_CHECK_MS = 1500   # how often to re-check challenge completion
 
@@ -393,17 +387,9 @@ class ConagotchiScreen(Screen):
     # ── Ring helpers ──────────────────────────────────────────────────────────
 
     def _build_menu(self):
-        """Ring items for this badge, with Vendor appended in vendor mode."""
-        menu = []
-        for b in _MENU_BTNS:
-            menu.append(b)
-        try:
-            from settings_state import BadgeSettings
-            if BadgeSettings().vendor_mode_enabled:
-                menu.append(_VENDOR_BTN)
-        except Exception:
-            pass
-        return tuple(menu)
+        """Ring items for this badge. (Vendor stamping lives in Collection ->
+        Stamps, shown when Vendor Mode is on.)"""
+        return tuple(_MENU_BTNS)
 
     def _btn_bg(self):
         """(bg_fb, bg_path, bg_color) for color-keyed ring buttons. bg_fb (a
@@ -450,9 +436,6 @@ class ConagotchiScreen(Screen):
             elif screen_id == "settings":
                 from screens.settings import SettingsScreen
                 mgr.push(SettingsScreen())
-            elif screen_id == "vendor":
-                from screens.vendor import VendorScreen
-                mgr.push(VendorScreen())
         else:
             self._pet.begin_action(action)
 

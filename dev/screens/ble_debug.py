@@ -1,4 +1,4 @@
-"""Debug -> Bluetooth: a BLE beacon send/receive RSSI tool.
+"""Debug -> Hardware -> Bluetooth: a BLE beacon send/receive RSSI tool.
 
 Two modes for tuning proximity (BLE_RSSI_MIN) and sanity-checking the radio:
 
@@ -14,6 +14,7 @@ so sharing the BLE singleton with the trade path is fine.
 """
 import ui
 from buttons import BOOT, LEFT, RIGHT, SELECT, START
+from menu import Menu
 from screen_manager import Screen
 import ble
 
@@ -30,7 +31,7 @@ _ROWS = ("Send", "Receive")
 class BleDebugScreen(Screen):
     def __init__(self):
         self._view = _MENU
-        self._sel = 0
+        self._menu = Menu([(label, None, i) for i, label in enumerate(_ROWS)])
         self._radio = None
         self._advertising = False
         self._scanning = False
@@ -51,18 +52,19 @@ class BleDebugScreen(Screen):
 
     async def update(self, display, leds, mgr):
         self._draw(display)
+        if self._view == _MENU:
+            self._menu.tick(display)
 
     def handle_button(self, btn, mgr):
         if self._view == _MENU:
             if btn in (BOOT, SELECT):
                 self._stop_all()
                 mgr.pop()
-            elif btn == LEFT:
-                self._sel = (self._sel - 1) % len(_ROWS); self._last_draw = None
-            elif btn == RIGHT:
-                self._sel = (self._sel + 1) % len(_ROWS); self._last_draw = None
+            elif btn == LEFT or btn == RIGHT:
+                self._menu.step(mgr._display, 1 if btn == RIGHT else -1)
+                self._last_draw = self._snapshot()   # repainted in place
             elif btn == START:
-                self._open(_SEND if self._sel == 0 else _RECV)
+                self._open(_SEND if self._menu.key == 0 else _RECV)
             return
         # Send / Receive modes: SEL/BOOT returns to the menu.
         if btn in (BOOT, SELECT):
@@ -159,38 +161,44 @@ class BleDebugScreen(Screen):
     # ── drawing ──────────────────────────────────────────────────────────────
 
     def _snapshot(self):
-        return (self._view, self._sel, self._advertising, self._count,
+        return (self._view, self._menu.sel, self._advertising, self._count,
                 self._latest, self._best, self._worst)
 
     def _draw(self, display):
+        """The frame is redrawn only when the view or the menu changes; live
+        readings repaint their own lines, so Receive does not blink."""
         snap = self._snapshot()
         if snap == self._last_draw:
             return
+        frame_changed = self._last_draw is None or self._last_draw[:3] != snap[:3]
         self._last_draw = snap
         if self._view == _MENU:
-            ui.screen(display, "BLUETOOTH")
-            top = ui.clamp_scroll(self._sel, 0, len(_ROWS))
-            ui.list_view(display, list(_ROWS), self._sel, top)
-            ui.controls(display, "OPEN")
+            if frame_changed:
+                ui.screen(display, "BLUETOOTH")
+                self._menu.draw(display)
+                ui.controls(display, "OPEN")
         elif self._view == _SEND:
-            ui.screen(display, "BLE SEND")
-            on = self._advertising
-            ui.status(display, "BEACON " + ("ON" if on else "OFF"), 92,
-                      "success" if on else "muted")
-            ui.center_text(display, "debug beacon", 116, ui._t().muted)
-            ui.controls(display, "STOP" if on else "SEND")
+            if frame_changed:
+                ui.screen(display, "BLE SEND")
+                on = self._advertising
+                ui.status(display, "BEACON " + ("ON" if on else "OFF"), 92,
+                          "success" if on else "muted")
+                ui.status(display, "debug beacon", 116, "muted")
+                ui.controls(display, "STOP" if on else "SEND")
         elif self._view == _RECV:
-            self._draw_receive(display)
+            if frame_changed:
+                ui.screen(display, "BLE RECEIVE")
+                ui.controls(display, "CLEAR")
+            self._paint_readings(display)
 
-    def _draw_receive(self, display):
-        th = ui._t()
-        ui.screen(display, "BLE RECEIVE")
+    def _paint_readings(self, display):
         if self._latest is None:
-            ui.status(display, "listening...", 96, "accent")
+            ui.status_row(display, "listening...", 78, "accent")
+            ui.status_row(display, "", 112, "muted")
         else:
-            ui.center_text(display, "%d dBm" % self._latest, 78, th.accent)
-            ui.center_text(display, "strong %d  weak %d" % (self._best, self._worst),
-                           112, th.muted)
+            ui.status_row(display, "%d dBm" % self._latest, 78, "accent")
+            ui.status_row(display, "strong %d  weak %d" % (self._best, self._worst),
+                          112, "muted")
         try:
             from config import BLE_RSSI_MIN
             gate = BLE_RSSI_MIN
@@ -199,5 +207,4 @@ class BleDebugScreen(Screen):
         line = "rx %d" % self._count
         if gate is not None:
             line += "   gate %d" % gate
-        ui.center_text(display, line, 150, th.muted)
-        ui.controls(display, "CLEAR")
+        ui.status_row(display, line, 150, "muted")

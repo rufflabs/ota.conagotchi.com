@@ -40,16 +40,16 @@ class TradeScreen(Screen):
 
     def __init__(self) -> None:
         self._view = _PICK
-        self._sel = 0
-        self._top = 0
+        from menu import Menu
+        self._pick = Menu()         # the Chi list (shared list behaviour)
         self._chars = ()
         self._active = ""
         self._session = None
         self._frame = None          # what the trading view last drew
         self._near = None           # the nearby list last drawn
+        self._near_keys = None      # its rows, for in-place refresh
         self._near_next = 0
         self._title = ui.Marquee()
-        self._row = ui.Marquee()
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -66,7 +66,7 @@ class TradeScreen(Screen):
     async def update(self, display, leds, mgr) -> None:
         self._title.tick(display)
         if self._view == _PICK:
-            ui.tick_list(display, self._rows(), self._sel, self._top, self._row)
+            self._pick.tick(display)
             return
         if self._view != _TRADING or self._session is None:
             return
@@ -76,7 +76,8 @@ class TradeScreen(Screen):
             self._refresh()
             self._draw(display)
         elif self._trading_frame() != self._frame:
-            self._draw(display)
+            self._frame = self._trading_frame()
+            self._paint_prompt(display)
         else:
             import time
             now = time.ticks_ms()
@@ -93,10 +94,7 @@ class TradeScreen(Screen):
             if back:
                 mgr.pop()
             elif btn == LEFT or btn == RIGHT:
-                count = len(self._chars)
-                self._sel = (self._sel + (1 if btn == RIGHT else -1)) % count
-                self._top = ui.clamp_scroll(self._sel, self._top, count)
-                self._draw(mgr._display)
+                self._pick.step(mgr._display, 1 if btn == RIGHT else -1)
             elif btn == START:
                 self._begin(mgr._display)
         elif self._view == _TRADING:
@@ -106,7 +104,8 @@ class TradeScreen(Screen):
                 self._draw(mgr._display)
             elif btn == START:
                 self._session.send()      # offer, and accept theirs, for a while
-                self._draw(mgr._display)
+                self._frame = self._trading_frame()
+                self._paint_prompt(mgr._display)
         elif back or btn == START:        # TRADE DONE -> pick again
             self._view = _PICK
             self._draw(mgr._display)
@@ -115,7 +114,7 @@ class TradeScreen(Screen):
         from settings_state import BadgeSettings
         from trade_session import TradeSession
         settings = BadgeSettings()
-        self._session = TradeSession(send_id=self._chars[self._sel].id,
+        self._session = TradeSession(send_id=self._pick.key,
                                      ble=settings.bluetooth_enabled,
                                      ir=settings.ir_enabled)
         self._view = _TRADING
@@ -133,15 +132,15 @@ class TradeScreen(Screen):
         import character_manager
         self._chars = tuple(character_manager.get_unlocked())
         self._active = character_manager.get_active().id
+        select = None
         if select_active:
             for i, char in enumerate(self._chars):
                 if char.id == self._active:
-                    self._sel = i
-        self._sel = min(self._sel, len(self._chars) - 1)
-        self._top = ui.window_top(self._sel, len(self._chars))
+                    select = i
+        self._pick.set_rows(self._rows(), select)
 
     def _rows(self):
-        return [(c.name, "ACTIVE") if c.id == self._active else c.name
+        return [(c.name, "ACTIVE" if c.id == self._active else None, c.id)
                 for c in self._chars]
 
     def _trading_frame(self):
@@ -153,8 +152,7 @@ class TradeScreen(Screen):
     def _draw(self, display) -> None:
         if self._view == _PICK:
             ui.screen(display, "TRADE", marquee=self._title)
-            ui.list_view(display, self._rows(), self._sel, self._top,
-                         marquee=self._row)
+            self._pick.draw(display)
             ui.message(display, "Pick a Chi to send", "muted")
             ui.controls(display, "NEXT")
         elif self._view == _TRADING:
@@ -163,6 +161,8 @@ class TradeScreen(Screen):
             self._draw_done(display)
 
     def _draw_trading(self, display) -> None:
+        """The whole trading view; afterwards only the nearby list and the
+        prompt are repainted, in place, so the screen does not blink."""
         from trade_session import my_badge, short_id
         s = self._session
         self._frame = self._trading_frame()
@@ -170,7 +170,13 @@ class TradeScreen(Screen):
         ui.status(display, "SEND " + _chi_name(s.send_id).upper(), _SEND_Y)
         ui.status(display, "ID %s  %s" % (short_id(my_badge()), s.transports()),
                   _ID_Y, "muted")
+        self._near_keys = None
         self._draw_nearby(display)
+        self._paint_prompt(display)
+        ui.controls(display, "SEND")
+
+    def _paint_prompt(self, display) -> None:
+        s = self._session
         if s.message:
             lines = ((s.message, "accent"),)
         elif s.window_open():
@@ -183,24 +189,23 @@ class TradeScreen(Screen):
             lines = (("Enable IR or BT for", "warning"), ("wireless trades", "warning"))
         else:
             lines = (("START TO SEND", "muted"),)
-        ui.text_lines(display, lines, _PROMPT_Y - (6 if len(lines) > 1 else 0),
-                      line_h=14)
-        ui.controls(display, "SEND")
+        lines = lines + (("", "muted"),) * (2 - len(lines))
+        for i, (text, kind) in enumerate(lines):
+            ui.status_row(display, text, _PROMPT_Y - 6 + i * 14, kind)
 
     def _draw_nearby(self, display) -> None:
-        """Nearby badges: short ID, signal bar and dB (or LINK/IR). Repainted
-        on its own as signals change, so the rest of the screen stays still."""
+        """Nearby badges: short ID, signal bar and dB (or LINK/IR). Refreshed
+        in place as signals change."""
         s = self._session
         near = s.nearby()
         self._near = _near_key(near)
-        ui.clear_band(display, _NEAR_TOP, _NEAR_BOTTOM - _NEAR_TOP)
-        if not near:
-            ui.status(display, "NO BADGES NEARBY", 104, "muted")
-            if s.use_ble:
-                ui.status(display, "Keep screen open", 122, "muted")
-            return
-        ui.meter_list(display, [_meter(row, s.rssi_min()) for row in near], None,
-                      _NEAR_Y, _NEAR_ROW_H)
+        rows = [_meter(row, s.rssi_min()) for row in near]
+        keys_before = self._near_keys
+        self._near_keys = ui.meters_in_place(
+            display, rows, keys_before, _NEAR_Y, _NEAR_ROW_H,
+            empty="NO BADGES NEARBY", empty_y=104, top=_NEAR_TOP, bottom=_NEAR_BOTTOM)
+        if not rows and self._near_keys != keys_before and s.use_ble:
+            ui.status(display, "Keep screen open", 122, "muted")
 
     def _draw_done(self, display) -> None:
         s = self._session

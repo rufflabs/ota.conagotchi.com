@@ -20,6 +20,11 @@ KEYBOARD_GRID = "grid"
 KEYBOARD_T9 = "t9"
 KEYBOARDS = (KEYBOARD_GRID, KEYBOARD_T9)
 
+# Menu text size (ui.set_list_scale): large draws list rows at 2x.
+TEXT_NORMAL = "normal"
+TEXT_LARGE = "large"
+TEXT_SIZES = (TEXT_NORMAL, TEXT_LARGE)
+
 _SAVE_DIR = "data"
 _SAVE_FILE = _SAVE_DIR + "/settings.txt"
 _BLE = None
@@ -42,6 +47,7 @@ class BadgeSettings:
         self.ota_channel = _DEFAULT_OTA_CHANNEL
         self.badge_mode = MODE_CONAGOTCHI
         self.keyboard = KEYBOARD_T9
+        self.text_size = TEXT_NORMAL
         self.load()
 
     def load(self) -> None:
@@ -74,6 +80,8 @@ class BadgeSettings:
                         self.badge_mode = value if value in BADGE_MODES else MODE_CONAGOTCHI
                     elif key == "keyboard":
                         self.keyboard = value if value in KEYBOARDS else KEYBOARD_T9
+                    elif key == "text_size":
+                        self.text_size = value if value in TEXT_SIZES else TEXT_NORMAL
                     elif key == "ota_channel":
                         # Ignore a channel the firmware no longer offers.
                         self.ota_channel = value if value in ota_channels() else _DEFAULT_OTA_CHANNEL
@@ -92,6 +100,7 @@ class BadgeSettings:
             f.write("ota_channel={}\n".format(self.ota_channel))
             f.write("badge_mode={}\n".format(self.badge_mode))
             f.write("keyboard={}\n".format(self.keyboard))
+            f.write("text_size={}\n".format(self.text_size))
             f.write("debug_enabled={}\n".format(1 if self.debug_enabled else 0))
             f.write("debug_led_cycle_enabled={}\n".format(1 if self.debug_led_cycle_enabled else 0))
             f.write("vendor_mode_enabled={}\n".format(1 if self.vendor_mode_enabled else 0))

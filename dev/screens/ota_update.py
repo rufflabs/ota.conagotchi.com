@@ -1,4 +1,4 @@
-"""Settings -> Update: manual file-level OTA update screen.
+"""Settings -> System -> Update: manual file-level OTA update screen.
 
 Shows the current OTA version, lets the user START a check, connects WiFi,
 streams changed files (progress bar), verifies sha256, commits, and reboots.
@@ -204,7 +204,7 @@ class OTAUpdateScreen(Screen):
         self._status = ""
 
     def _no_wifi(self, msg):
-        """Send the user to Settings -> Wi-Fi instead of showing a bare error."""
+        """Send the user to Settings -> Wireless -> Wi-Fi instead of showing a bare error."""
         self._state = _STATE_NO_WIFI
         self._status = msg
         self._error = ""
@@ -288,7 +288,7 @@ class OTAUpdateScreen(Screen):
                 ui.controls(display, "AGAIN")
         elif self._state == _STATE_NO_WIFI:
             ui.status(display, self._status, 78, "warning")
-            ui.paragraph(display, "Open Settings > Wi-Fi to join a network, "
+            ui.paragraph(display, "Open Settings > Wireless > Wi-Fi to join a network, "
                          "then try again.", 106)
             ui.controls(display, "RETRY")
         elif self._state == _STATE_ERROR:

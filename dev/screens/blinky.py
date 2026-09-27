@@ -1,7 +1,7 @@
 """Blinky mode: a slow colour fade across the RGB LEDs, over the boot art.
 
 A "just look nice on a lanyard" mode for when nobody is playing with the pet.
-Selected from Settings -> Badge Mode, persisted, and honoured at boot, so a badge
+Selected from Settings -> Badge -> Badge Mode, persisted, and honoured at boot, so a badge
 left in Blinky comes back up in Blinky. The display shows the boot splash image.
 
 Each LED breathes on its own period, so they drift in and out of step and the

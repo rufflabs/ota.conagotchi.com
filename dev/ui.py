@@ -29,13 +29,16 @@ def _t():
 
 # ── Text ────────────────────────────────────────────────────────────────────
 
-def center_text(display, text, y, fg=None, bg=None):
+def center_text(display, text, y, fg=None, bg=None, scale=1):
     """Draw horizontally-centred text.  Colors default to text-on-bg."""
     th = _t()
     fg = th.text if fg is None else fg
     bg = th.bg if bg is None else bg
-    x = (240 - len(text) * _CHAR_W) // 2
-    draw_text(display, text, x, y, fg, bg)
+    x = (240 - len(text) * _CHAR_W * scale) // 2
+    if scale == 1:
+        draw_text(display, text, x, y, fg, bg)
+    else:
+        draw_text(display, text, x, y, fg, bg, scale)
 
 
 def text(display, s, x, y, fg=None, bg=None):
@@ -228,6 +231,32 @@ def controls(display, confirm=None):
         draw_text(display, verb, right, _CTRL_Y, th.muted, bg)
 
 
+# ── List text size ──────────────────────────────────────────────────────────
+# Menu rows can be drawn at 2x (Settings -> Badge -> Text Size). Only list rows
+# and their headings change; titles, controls and body text keep their size,
+# and right-hand values stay at normal size. Large rows are taller, so fewer fit.
+_LIST_SCALE = 1
+_LARGE_ROWS = (54, 34, 3)     # row_top, row_h, rows_visible at 2x
+
+
+def set_list_scale(scale) -> None:
+    """1 for normal menu text, 2 for large. Applied at boot from settings."""
+    global _LIST_SCALE
+    _LIST_SCALE = 2 if scale == 2 else 1
+
+
+def list_scale() -> int:
+    return _LIST_SCALE
+
+
+def list_metrics(scale=None):
+    """(row_top, row_h, rows_visible) for the theme and the menu text size."""
+    if (scale or _LIST_SCALE) == 2:
+        return _LARGE_ROWS
+    th = _t()
+    return th.row_top, th.row_h, th.rows_visible
+
+
 def window_top(selected, count, visible=None):
     """Scroll offset that centres `selected` in a `visible`-row window.
 
@@ -237,7 +266,7 @@ def window_top(selected, count, visible=None):
     possible.
     """
     if visible is None:
-        visible = _t().rows_visible
+        visible = list_metrics()[2]
     if count <= visible:
         return 0
     return max(0, min(selected - visible // 2, count - visible))
@@ -276,19 +305,25 @@ def state_color(value):
     return th.muted
 
 
-def label_width(value=None):
+def label_width(value=None, scale=None):
     """Characters a row's label may use, beside an optional right-hand value
-    (the selection prefix of marker themes included)."""
+    (the selection prefix of marker themes included). The value is always
+    normal size; the label follows the menu text size."""
     th = _t()
+    scale = scale or _LIST_SCALE
+    cw = _CHAR_W * scale
     if value is None:
-        return (240 - 2 * th.text_inset) // _CHAR_W
+        return (240 - 2 * th.text_inset) // cw
     vx = 240 - th.text_inset - len(value) * _CHAR_W
-    return max(1, (vx - th.text_inset) // _CHAR_W - 1)
+    if scale == 1:
+        return max(1, (vx - th.text_inset) // _CHAR_W - 1)
+    return max(1, (vx - th.text_inset - _CHAR_W) // cw)
 
 
 def row(display, y, label, value=None, selected=False, value_fg=None, fill=None,
-        scroll=0):
-    """One list row whose top is `y` (text sits at y+3), in the theme's style.
+        scroll=0, scale=None, clear=False):
+    """One list row whose top is `y`, in the theme's style and the menu text
+    size (`scale` overrides it; the button test keeps its rows normal size).
 
     list_view draws its rows with this; call it directly only for a layout
     list_view cannot express, e.g. several rows lit at once (the button test).
@@ -298,33 +333,106 @@ def row(display, y, label, value=None, selected=False, value_fg=None, fill=None,
              starting `scroll` characters in; unselected rows are clipped.
     """
     th = _t()
+    scale = scale or _LIST_SCALE
+    row_h = list_metrics(scale)[1]
+    # Label and value are vertically centred in the row (normal: both at y+3).
+    label_y = y + 3 if scale == 1 else y + (row_h - 16) // 2 - 2
+    value_y = y + 3 if scale == 1 else y + (row_h - 8) // 2 - 2
     marker = (th.select == "marker")
     lit = selected or fill is not None
+    # Narrowed on the outer rows so the bar's corners stay on the glass. The
+    # bar never reaches the scrollbar arc, so a row can repaint just this box.
+    w = box_width(y - 2, row_h, 240 - 2 * th.row_pad_x)
     if lit and (not marker or fill is not None):
-        # Narrowed on the outer rows so the bar's corners stay on the glass.
-        w = box_width(y - 2, th.row_h, 240 - 2 * th.row_pad_x)
         row_bg = getattr(th, fill) if fill else th.sel
-        display.fill_rect((240 - w) // 2, y - 2, w, th.row_h, row_bg)
+        display.fill_rect((240 - w) // 2, y - 2, w, row_h, row_bg)
     else:
         row_bg = th.bg
+        if clear:                 # erase a highlight this row used to have
+            display.fill_rect((240 - w) // 2, y - 2, w, row_h, row_bg)
     # right-aligned value, and the label budget to its left
-    avail = label_width(value)
+    avail = label_width(value, scale)
     vx = 240 - th.text_inset - len(value) * _CHAR_W if value is not None else None
     prefix = ("> " if selected else "  ") if marker else ""
-    width = max(1, avail - len(prefix))
+    # Large text draws the marker at normal size: 16px, one large character.
+    width = max(1, avail - (len(prefix) if scale == 1 else len(prefix) // 2))
     if len(label) > width:
         label = scroll_window(label, scroll, width) if selected else clip(label, width)
     if fill:
         fg = th.bg
     else:
         fg = (th.accent if selected else th.text) if marker else th.text
-    draw_text(display, prefix + label, th.text_inset, y + 3, fg, row_bg)
+    if scale == 1:
+        draw_text(display, prefix + label, th.text_inset, label_y, fg, row_bg)
+    else:
+        x = th.text_inset
+        if prefix:
+            draw_text(display, prefix, x, value_y, fg, row_bg)
+            x += len(prefix) * _CHAR_W
+        draw_text(display, label, x, label_y, fg, row_bg, scale)
     if value is not None:
         vfg = th.bg if fill else (value_fg or state_color)(value)
-        draw_text(display, value, vx, y + 3, vfg, row_bg)
+        draw_text(display, value, vx, value_y, vfg, row_bg)
 
 
-def list_view(display, items, sel, top, value_fg=None, marquee=None, only=None):
+# Scrollbar: an arc hugging the right edge of the glass beside the list rows.
+_BAR_R = 116          # arc radius (the glass is 120; row text stops inside 114)
+_BAR_W = 3            # thickness in pixels, drawn outward from _BAR_R
+_BAR_MIN = 10         # shortest thumb, in pixels of height
+
+
+def _arc_x(y):
+    """x of the scrollbar arc on row y (right-hand side of the circle)."""
+    dy = y + 0.5 - 119.5
+    return int(119.5 + (_BAR_R * _BAR_R - dy * dy) ** 0.5)
+
+
+_ARC_RUNS = {}          # (y0, y1) -> [(x, y, height)], computed once per list
+
+
+def _arc_runs(y0, y1):
+    """The arc between rows y0..y1 as vertical runs sharing an x, so a long arc
+    is a handful of rectangles, not one per pixel. Cached: lists reuse a few
+    fixed spans, and the square roots are the slow part on the badge."""
+    key = (y0, y1)
+    runs = _ARC_RUNS.get(key)
+    if runs is None:
+        runs = []
+        y = y0
+        while y < y1:
+            x = _arc_x(y)
+            run = 1
+            while y + run < y1 and _arc_x(y + run) == x:
+                run += 1
+            runs.append((x, y, run))
+            y += run
+        _ARC_RUNS[key] = runs
+    return runs
+
+
+def scrollbar(display, top, visible, count, y0, y1) -> None:
+    """Where the visible window sits in a longer list: a dim track from y0 to
+    y1 and a brighter thumb sized to visible/count. Nothing when all fits.
+    Each run is drawn once, in its track or thumb colour (no overdraw)."""
+    if count <= visible or y1 <= y0:
+        return
+    th = _t()
+    span = y1 - y0
+    thumb = max(_BAR_MIN, span * visible // count)
+    t0 = y0 + (span - thumb) * top // (count - visible)
+    t1 = t0 + thumb
+    for x, y, h in _arc_runs(y0, y1):
+        end = y + h
+        # split the run where it crosses the thumb's edges
+        for a, b, color in ((y, min(end, t0), th.heading),
+                            (max(y, t0), min(end, t1), th.muted),
+                            (max(y, t1), end, th.heading)):
+            if b > a:
+                display.fill_rect(x, a, _BAR_W, b - a, color)
+
+
+def list_view(display, items, sel, top, value_fg=None, marquee=None, only=None,
+              clear=False):
     """Draw the visible window of a vertical list with the theme's selection style.
 
     items    — full list; each item is either a label string or a
@@ -336,35 +444,62 @@ def list_view(display, items, sel, top, value_fg=None, marquee=None, only=None):
 
     marquee  — a Marquee: the selected row's label scrolls when too long
                (drive it with tick_list from update()).
-    only     — redraw just this index (used by tick_list).
+    only     — redraw just this index, or these indices (used by tick_list
+               and repaint_list).
+    clear    — erase each drawn row's box first (for repainting in place).
 
     Uses theme.rows_visible / row_top / row_h / text_inset / row_pad_x and the
     theme's `select` style ("fill" highlight bar or "marker" `>` cursor).
     """
     th = _t()
     marker = (th.select == "marker")
-    end = min(len(items), top + th.rows_visible)
+    row_top, row_h, visible = list_metrics()
+    scale = _LIST_SCALE
+    end = min(len(items), top + visible)
+    if only is not None and not isinstance(only, (tuple, list)):
+        only = (only,)
     for i in range(top, end):
-        if only is not None and i != only:
+        if only is not None and i not in only:
             continue
         item = items[i]
-        y = th.row_top + (i - top) * th.row_h
+        y = row_top + (i - top) * row_h
         if isinstance(item, Header):
-            # Muted and never highlighted, so a group reads as a divider rather
-            # than another choice. Indented to where a row's label glyphs
-            # actually start: marker themes prefix entries with "> " or two
-            # spaces, so the heading has to clear that too, or it sits left of
-            # the entries it introduces.
-            head_x = th.text_inset + (2 * _CHAR_W if marker else 0)
-            draw_text(display, item.label[:fit_chars(y + 3)].upper(),
-                      head_x, y + 3, th.muted, th.bg)
+            # Styled like the title panel, a shade darker (theme "heading"):
+            # a full-width band with the name centred, so a group reads as a
+            # divider rather than another choice. Never highlighted.
+            display.fill_rect(0, y - 2, 240, row_h, th.heading)
+            if scale == 1:
+                center_text(display, clip(item.label.upper(), fit_chars(y + 3)),
+                            y + 3, th.text, th.heading)
+            else:
+                ty = y + (row_h - 16) // 2 - 2
+                chars = box_width(ty, 16) // (_CHAR_W * scale)
+                center_text(display, clip(item.label.upper(), chars), ty,
+                            th.text, th.heading, scale)
             continue
         label, value = (item[0], item[1]) if isinstance(item, tuple) else (item, None)
         scroll = 0
         if marquee is not None and i == sel:
-            prefix = 2 if marker else 0
+            prefix = (2 if scale == 1 else 1) if marker else 0
             scroll = marquee.use(label, label_width(value) - prefix)
-        row(display, y, label, value, i == sel, value_fg, scroll=scroll)
+        row(display, y, label, value, i == sel, value_fg, scroll=scroll, clear=clear)
+    if only is None:
+        scrollbar(display, top, visible, len(items), row_top - 2,
+                  row_top - 2 + visible * row_h)
+
+
+def repaint_list(display, items, sel, top, old_sel, old_top, value_fg=None,
+                 marquee=None) -> None:
+    """After the selection moved, repaint only what changed: the two rows
+    whose highlight changed, or, when the window scrolled, the rows area and
+    the scrollbar. The title, message line and controls are left alone."""
+    if top == old_top:
+        list_view(display, items, sel, top, value_fg, marquee,
+                  only=(old_sel, sel), clear=True)
+        return
+    row_top, row_h, visible = list_metrics()
+    display.fill_rect(0, row_top - 2, 240, visible * row_h, _t().bg)
+    list_view(display, items, sel, top, value_fg, marquee)
 
 
 def tick_list(display, items, sel, top, marquee, value_fg=None):
@@ -397,9 +532,20 @@ def needs_scroll(text, y=None):
     return len(text) > fit_chars(TITLE_TEXT_Y if y is None else y)
 
 
+def page_top(sel, count, visible=None):
+    """First row of the page holding `sel`: lists move a page at a time, so
+    the window only changes when the selection leaves the page (pages start
+    at 0, visible, 2*visible, ...; the last page may be short)."""
+    if visible is None:
+        visible = list_metrics()[2]
+    if count <= visible:
+        return 0
+    return (sel // visible) * visible
+
+
 def clamp_scroll(sel, top, count):
     """Return an updated `top` so `sel` stays within the visible window."""
-    rows = _t().rows_visible
+    rows = list_metrics()[2]
     if sel < top:
         return sel
     if sel >= top + rows:
@@ -674,11 +820,43 @@ def meter_list(display, rows, sel, y=48, row_h=36):
             display.fill_rect(x, ry - 6, w, box_h, th.sel)
             display.rect(x, ry - 6, w, box_h, th.accent)
         value = meter[3] if len(meter) > 3 else "%d%%" % pct
-        draw_text(display, clip(label, chars - len(value) - 1), x + 12, ry,
+        # Both texts are padded to fixed widths, so redrawing a row in place
+        # overwrites the previous text completely (see refresh-in-place below).
+        value = " " * max(0, 6 - len(value)) + value
+        label_w = chars - len(value) - 1
+        label = clip(label, label_w)
+        draw_text(display, label + " " * (label_w - len(label)), x + 12, ry,
                   th.text, bg)
         draw_text(display, value, x + w - 12 - len(value) * _CHAR_W, ry,
                   th.muted, bg)
         progress_bar(display, ry + 11, pct, h=6, w=w - 24, kind=kind, frame=True)
+
+
+def status_row(display, s, y, kind="text"):
+    """A status line that can be redrawn in place without flicker: the text is
+    centred inside a full-width row of spaces, so it overwrites whatever the
+    row held before. Use it for lines that change while a screen is open."""
+    width = fit_chars(y)
+    s = clip(s, width)
+    left = (width - len(s)) // 2
+    status(display, " " * left + s + " " * (width - len(s) - left), y, kind)
+
+
+def meters_in_place(display, rows, prev_keys, y, row_h, empty=None, empty_y=None,
+                    top=None, bottom=None):
+    """Refresh a meter_list that changes while a screen is open, without
+    flashing it. Rows are (key, pct, kind, value); when the keys (and so the
+    layout) are unchanged the rows are simply redrawn over themselves; only a
+    change of rows clears the band from `top` to `bottom` first. `empty` is the
+    line shown when there are no rows. Returns the keys drawn, to pass back."""
+    keys = tuple(r[0] for r in rows)
+    if keys != prev_keys:
+        clear_band(display, top, bottom - top)
+        if not rows and empty:
+            status(display, empty, empty_y, "muted")
+    if rows:
+        meter_list(display, rows, None, y, row_h)
+    return keys
 
 
 def clear_band(display, y, h):

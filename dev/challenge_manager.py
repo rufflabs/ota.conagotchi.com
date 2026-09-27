@@ -78,6 +78,29 @@ def mark_complete(challenge_id: str) -> None:
 
 # ── Internal ──────────────────────────────────────────────────────────────────
 
+def reset_progress() -> int:
+    """Forget every challenge's progress (debug): completions, lab progress and
+    the trade history the trade quests are measured from. Stamps, characters
+    and pet state are untouched. Returns the number of files removed."""
+    import os
+    import peer_manager
+    paths = [_STATE_FILE, peer_manager._PEER_FILE, peer_manager._FLAG_FILE,
+             peer_manager._TRADE_FILE]
+    try:
+        paths += ["data/" + n for n in os.listdir("data")
+                  if n.startswith("lab_") and n.endswith(".json")]
+    except OSError:
+        pass
+    removed = 0
+    for path in paths:
+        try:
+            os.remove(path)
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def _load() -> dict:
     result = {"active": "", "completed": []}
     try:

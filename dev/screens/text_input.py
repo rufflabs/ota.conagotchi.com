@@ -8,7 +8,7 @@ shortcut - then the screen pops itself. SELECT turns the page (grid) or cycles
 case (T9); LEFT/RIGHT move between keys; START types the selected key. The CLR
 key empties the field.
 
-The layout follows Settings -> Keyboard: a T9 phone keypad (the default) or
+The layout follows Settings -> Badge -> Keyboard: a T9 phone keypad (the default) or
 the classic grid (see keyboards.py for the editing rules). Chrome comes from `ui` and colours
 from the theme, and every key is placed by key_rect() so the bounds test can
 prove the whole keyboard sits inside the round bezel.

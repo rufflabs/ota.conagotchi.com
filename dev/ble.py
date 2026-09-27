@@ -91,17 +91,33 @@ def decode_adv(adv: bytes):
 PRESENCE_PREFIX = b"OZP1:"
 
 
+# A vendor stamp reply (attendee -> vendor), also carried as a raw body.
+ACK_PREFIX = b"OZA1:"
+
+
 def sender(payload: bytes) -> str:
-    """The sending badge's id in a Chi trade or presence payload, else ""."""
+    """The sending badge's id in any badge payload (Chi offer, presence, stamp,
+    stamp reply), else ""."""
     try:
         if payload.startswith(PRESENCE_PREFIX):
             return payload[len(PRESENCE_PREFIX):].decode()
-        if payload.startswith(_PREFIX_CHAR):
-            parts = payload[len(_PREFIX_CHAR):].split(b":")
-            return parts[1].decode() if len(parts) > 1 else ""
+        for prefix in (_PREFIX_CHAR, _PREFIX_STAMP, ACK_PREFIX):
+            if payload.startswith(prefix):
+                parts = payload[len(prefix):].split(b":")
+                return parts[1].decode() if len(parts) > 1 else ""
     except Exception:
         pass
     return ""
+
+
+def vendor(payload: bytes) -> str:
+    """The vendor ID a stamp beacon advertises, else ""."""
+    if not payload.startswith(_PREFIX_STAMP):
+        return ""
+    try:
+        return payload[len(_PREFIX_STAMP):].split(b":")[0].decode()
+    except Exception:
+        return ""
 
 
 def _decode_body(data: bytes):

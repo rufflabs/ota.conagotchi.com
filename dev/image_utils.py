@@ -188,12 +188,13 @@ def restore_from_bg(display, bg_path: str, x: int, y: int, w: int, h: int) -> No
 
 
 def draw_text(display, text: str, x: int, y: int,
-              fg: int = 0xFFFF, bg: int = 0x0000) -> None:
+              fg: int = 0xFFFF, bg: int = 0x0000, scale: int = 1) -> None:
     """
     Draw a string using fixed 8×8 text cells.
 
     fg / bg are RGB565 big-endian values (same encoding as gc9a01py constants).
-    Characters are 8 px wide × 8 px tall.
+    Characters are 8 px wide × 8 px tall, or 16×16 with scale=2 (each pixel
+    doubled, so the same glyph shapes are kept; used for large menu text).
     """
     w = len(text) * _TEXT_W
     if w <= 0:
@@ -207,7 +208,30 @@ def draw_text(display, text: str, x: int, y: int,
     fb.text(text, 0, 0, fg_le)
     _ground_lower_strokes(buf, w, fg, bg)
     _draw_open_dyslexic_glyphs(buf, text, w, fg, bg)
+    if scale == 2:
+        buf = _double(buf, w, _TEXT_H)
+        display.blit_buffer(buf, x, y, w * 2, _TEXT_H * 2)
+        return
     display.blit_buffer(buf, x, y, w, _TEXT_H)
+
+
+def _double(buf, w: int, h: int):
+    """Scale an RGB565 buffer 2x by repeating every pixel and every row."""
+    out = bytearray(w * h * 8)
+    row2 = w * 4                  # bytes in one doubled row
+    for r in range(h):
+        src = r * w * 2
+        dst = r * 2 * row2
+        for c in range(w):
+            hi = buf[src + c * 2]
+            lo = buf[src + c * 2 + 1]
+            o = dst + c * 4
+            out[o] = hi
+            out[o + 1] = lo
+            out[o + 2] = hi
+            out[o + 3] = lo
+        out[dst + row2:dst + 2 * row2] = out[dst:dst + row2]
+    return out
 
 
 def _ground_lower_strokes(buf, width: int, fg: int, bg: int) -> None:

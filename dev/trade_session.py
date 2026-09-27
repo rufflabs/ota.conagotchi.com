@@ -1,4 +1,5 @@
-"""One badge-to-badge exchange (a Chi or a vendor stamp), with no drawing.
+"""One badge-to-badge Chi trade, with no drawing. (Vendor stamps are
+stamp_session.py.)
 
 A screen owns a TradeSession, calls start() when its trade view opens,
 poll() from its update() tick, and reads the session's state to draw. The Trade
@@ -29,11 +30,7 @@ import random
 import time
 
 CHAR_PREFIX = b"OZC1:"
-STAMP_PREFIX = b"OZS1:"
 PRESENCE_PREFIX = b"OZP1:"
-
-CHARS = "chars"
-STAMPS = "stamps"
 
 SEND_WINDOW_MS = 10000      # how long SEND offers and accepts a Chi
 _BROADCAST_MIN_MS = 800     # presence beacon interval (plus jitter)
@@ -47,10 +44,9 @@ COMPLETE_LINGER_MS = 1200   # keep beaconing after a trade lands so the peer
 
 
 class TradeSession:
-    """Exchange state for one screen. `send_id` is the Chi to send (CHARS)."""
+    """Trade state for one screen. `send_id` is the Chi to send."""
 
-    def __init__(self, kind=CHARS, send_id="", ble=True, ir=True) -> None:
-        self.kind = kind
+    def __init__(self, send_id="", ble=True, ir=True) -> None:
         self.send_id = send_id
         self.use_ble = ble
         self.use_ir = ir
@@ -239,14 +235,12 @@ class TradeSession:
 
     def _offering(self) -> bool:
         """True while this badge should offer, not just announce itself."""
-        return self.kind == STAMPS or self.window_open()
+        return self.window_open()
 
     def _broadcast(self) -> None:
         offering = self._offering()
         if offering:
-            payload = self._payload()
-            if payload is None:
-                return
+            payload = pack_char(self.send_id, my_badge())
         else:
             # Outside the send window: say we are here, offering nothing.
             payload = PRESENCE_PREFIX + my_badge().encode()
@@ -262,7 +256,7 @@ class TradeSession:
         if not self.completing:          # keep the link the trade came over
             self.transport = "BT" if self._ble is not None else self._fallback()
         # Offering our Chi is the "sent" half of a trade.
-        if self.kind == CHARS and offering and sent:
+        if offering and sent:
             try:
                 import peer_manager
                 peer_manager.mark_sent()
@@ -270,16 +264,6 @@ class TradeSession:
                 self._record_completed_trade()
             except Exception:
                 pass
-
-    def _payload(self):
-        if self.kind == STAMPS:
-            vendor = _vendor_stamp()
-            if vendor is None:
-                return None
-            import stamp_manager
-            stamp_id, name = vendor
-            return STAMP_PREFIX + stamp_manager.pack(stamp_id, name).encode()
-        return pack_char(self.send_id, my_badge())
 
     def _poll_links(self) -> None:
         if self._ble is not None:
@@ -289,10 +273,9 @@ class TradeSession:
                 packet = self._ble.read()
                 if not packet:
                     continue
-                # handle_packet ignores presence beacons, the wrong kind of
-                # offer, and Chi offers outside our own send window.
-                if packet.startswith(STAMP_PREFIX) == (self.kind == STAMPS):
-                    self.handle_packet(packet, "BT")
+                # handle_packet ignores presence beacons, stamps, and Chi
+                # offers outside our own send window.
+                self.handle_packet(packet, "BT")
         if self._wired is not None:
             for _ in range(4):
                 if not self._wired.available():
@@ -321,16 +304,11 @@ class TradeSession:
     def handle_packet(self, packet: bytes, via: str = None) -> None:
         if not self.running or self.completing:
             return
-        if packet.startswith(STAMP_PREFIX):
-            if via:
-                self.transport = via
-            self._handle_stamp(packet)
-            return
         parsed = parse_char(packet)
         if parsed is None:
             return
         cid, peer = parsed
-        if self.kind != CHARS or (peer and peer == my_badge()):
+        if peer and peer == my_badge():
             return
         # Only while our own send window is open: both sides must press SEND.
         if not self.window_open():
@@ -363,18 +341,6 @@ class TradeSession:
                 pass
         self._begin_complete(_chi_name(self.send_id), cls.name, newly)
 
-    def _handle_stamp(self, packet: bytes) -> None:
-        try:
-            text = packet[len(STAMP_PREFIX):].decode()
-        except Exception:
-            return
-        import stamp_manager
-        parsed = stamp_manager.unpack(text)
-        if parsed is None:
-            return
-        stamp_id, name = parsed
-        self._begin_complete("", name, stamp_manager.collect(stamp_id, name))
-
     def _begin_complete(self, sent: str, recv: str, new: bool) -> None:
         if self.completing:        # first landed packet wins
             return
@@ -386,13 +352,12 @@ class TradeSession:
         self._next_broadcast = now   # re-send ours now so the peer completes
         # Keep offering through the linger so the peer converges, even if the
         # trade landed near the end of our send window.
-        if self.kind == CHARS:
-            self._window_end = self._complete_at
+        self._window_end = self._complete_at
         self.message = "GOT " + recv.upper()
 
     def _record_completed_trade(self) -> None:
-        if (self.completing and self.kind == CHARS
-                and self._session_sent and not self._trade_counted):
+        if (self.completing and self._session_sent
+                and not self._trade_counted):
             try:
                 import peer_manager
                 peer_manager.record_completed_trade()
@@ -407,14 +372,6 @@ def _safe_send(link, payload) -> bool:
         return True
     except Exception:
         return False
-
-
-def _vendor_stamp():
-    try:
-        import stamp_manager
-        return stamp_manager.vendor_stamp()
-    except Exception:
-        return None
 
 
 def _chi_name(cid: str) -> str:
