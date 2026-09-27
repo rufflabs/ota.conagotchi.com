@@ -28,7 +28,10 @@ _BLE = None
 class BadgeSettings:
     def __init__(self) -> None:
         self.wifi_enabled = False
+        # Bluetooth / IR: may trades use them? Neither radio is powered at
+        # idle; a trade powers what it uses and releases it afterwards.
         self.bluetooth_enabled = False
+        self.ir_enabled = False
         self.ssid = WIFI_SSID
         self.password = WIFI_PASSWORD
         self.trusted_bssid = ""
@@ -50,6 +53,8 @@ class BadgeSettings:
                         self.wifi_enabled = value == "1"
                     elif key == "bluetooth_enabled":
                         self.bluetooth_enabled = value == "1"
+                    elif key == "ir_enabled":
+                        self.ir_enabled = value == "1"
                     elif key == "ssid":
                         self.ssid = value or WIFI_SSID
                     elif key == "password":
@@ -80,6 +85,7 @@ class BadgeSettings:
         with open(_SAVE_FILE, "w") as f:
             f.write("wifi_enabled={}\n".format(1 if self.wifi_enabled else 0))
             f.write("bluetooth_enabled={}\n".format(1 if self.bluetooth_enabled else 0))
+            f.write("ir_enabled={}\n".format(1 if self.ir_enabled else 0))
             f.write("ssid={}\n".format(self.ssid))
             f.write("password={}\n".format(self.password))
             f.write("trusted_bssid={}\n".format(self.trusted_bssid))
@@ -115,21 +121,15 @@ class BadgeSettings:
         self.save()
 
     def apply_radios(self) -> tuple:
-        """Apply saved radio settings and return actual (wifi, bluetooth) states."""
-        changed = False
+        """Apply saved radio settings at boot; return actual (wifi, bluetooth).
+
+        Bluetooth is always powered down here: `bluetooth_enabled` only says
+        whether trades may use it, and a trade powers the radio itself."""
         wifi_actual = set_wifi_enabled(self.wifi_enabled)
         if wifi_actual is not None and wifi_actual != self.wifi_enabled:
             self.wifi_enabled = wifi_actual
-            changed = True
-
-        bluetooth_actual = set_bluetooth_enabled(self.bluetooth_enabled)
-        if bluetooth_actual is not None and bluetooth_actual != self.bluetooth_enabled:
-            self.bluetooth_enabled = bluetooth_actual
-            changed = True
-
-        if changed:
             self.save()
-        return wifi_actual, bluetooth_actual
+        return wifi_actual, set_bluetooth_enabled(False)
 
 
 def ota_channels() -> tuple:

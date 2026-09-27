@@ -85,6 +85,25 @@ def decode_adv(adv: bytes):
     return None
 
 
+# Presence beacon: "I am here" with no trade offer, sent while the trade screen
+# is open outside the pairing window so nearby badges can list each other.
+# Carried as a raw body.
+PRESENCE_PREFIX = b"OZP1:"
+
+
+def sender(payload: bytes) -> str:
+    """The sending badge's id in a Chi trade or presence payload, else ""."""
+    try:
+        if payload.startswith(PRESENCE_PREFIX):
+            return payload[len(PRESENCE_PREFIX):].decode()
+        if payload.startswith(_PREFIX_CHAR):
+            parts = payload[len(_PREFIX_CHAR):].split(b":")
+            return parts[1].decode() if len(parts) > 1 else ""
+    except Exception:
+        pass
+    return ""
+
+
 def _decode_body(data: bytes):
     if not data:
         return None

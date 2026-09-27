@@ -6,7 +6,7 @@ Persistence:
 
 Each character's full state is stored separately in data/char_{id}.txt and is
 managed by PetState. This module tracks which character is active and which
-characters have been collected/unlocked for OzConBase.
+characters have been collected/unlocked (Collection, trades).
 
 Random selection on first boot is weighted by character rarity so that rarer
 characters appear less often. The starting character is automatically collected.
@@ -73,6 +73,26 @@ def unlock(character_id: str) -> bool:
     ids.append(character_id)
     _save_unlocked_ids(ids)
     return True
+
+
+def unlock_all():
+    """Collect every registered character (debug). Returns the classes that
+    were newly collected, so the caller can give each a fresh pet."""
+    ids = _load_unlocked_ids()
+    new = [cls for cls in CHARACTERS if cls.id not in ids]
+    if new:
+        _save_unlocked_ids(ids + [cls.id for cls in new])
+    return new
+
+
+def lock_all_but_active() -> int:
+    """Un-collect every character except the active one (debug). Nothing else
+    is reset. Returns how many were locked. Their pet saves stay on disk; one
+    collected again later (e.g. by trade) starts fresh, as any new Chi does."""
+    active = get_active()
+    locked = len([cid for cid in _load_unlocked_ids() if cid != active.id])
+    _save_unlocked_ids((active.id,))
+    return locked
 
 
 def set_active(character_id: str):

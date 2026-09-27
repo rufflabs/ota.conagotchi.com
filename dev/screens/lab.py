@@ -9,29 +9,9 @@ Root menu values are the metadata: difficulty, how much evidence has been read,
 and how many hints have been spent. The parameter list shows each field's current
 value inline, so the state of a request is visible without opening anything.
 """
-import time
-
 import ui
 from buttons import BOOT, LEFT, RIGHT, SELECT, START
 from screen_manager import Screen
-
-_TITLE_STEP_MS = 320   # marquee: one character per step
-_TEXT_Y = 56
-_TEXT_ROWS = 5
-_TEXT_LINE_H = 20
-_WRAP = 20
-
-
-def _wrap(text):
-    # Evidence paths and flag tokens must not run into the circular bezel.
-    lines = []
-    for paragraph in text.split("\n"):
-        for line in ui.wrap(paragraph, _WRAP):
-            lines.extend(line[i:i + _WRAP] for i in range(0, len(line), _WRAP))
-        if not paragraph:
-            lines.append("")
-    return lines or [""]
-
 
 class LabScreen(Screen):
     """Drives one lab. `challenge_cls` supplies the id, character and prereq."""
@@ -50,9 +30,7 @@ class LabScreen(Screen):
         self._choice = 0
         self._locked = False
         self._title = getattr(challenge_cls, "name", "LAB")
-        self._title_off = 0
-        self._title_next = 0
-        self._title_drawn = None
+        self._marquee = ui.Marquee()
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -90,28 +68,10 @@ class LabScreen(Screen):
         return "this character"
 
     async def update(self, display, leds, mgr) -> None:
-        """Advance the title marquee only when the title does not fit.
-
-        Nothing else on these views animates, so this repaints just the title
-        row rather than the whole screen."""
-        if not self._title_scrolls():
-            return
-        now = time.ticks_ms()
-        if time.ticks_diff(now, self._title_next) < 0:
-            return
-        self._title_next = time.ticks_add(now, _TITLE_STEP_MS)
-        self._title_off += 1
-        self._draw_title(display)
+        self._marquee.tick(display)
 
     def _heading(self):
         return self._field[1] if self._view == "field" else self._title
-
-    def _title_scrolls(self):
-        return ui.needs_scroll(self._heading())
-
-    def _draw_title(self, display):
-        offset = self._title_off if self._title_scrolls() else 0
-        ui.title_bar(display, self._heading(), offset=offset)
 
     # ── menu contents ────────────────────────────────────────────────────────
 
@@ -141,15 +101,11 @@ class LabScreen(Screen):
             return [(key, name, None) for key, name in lab.spec["actions"]]
         return []
 
-    def _reset_title(self):
-        self._title_off = 0
-        self._title_next = time.ticks_add(time.ticks_ms(), _TITLE_STEP_MS)
-
     def _text(self, text):
-        self._reset_title()
+        self._marquee.reset()
         self._return, self._return_sel = self._view, self._sel
         self._view = "text"
-        self._lines = _wrap(text)
+        self._lines = ui.wrap_text(text)
         self._scroll = 0
 
     def _finish(self, mgr):
@@ -194,7 +150,7 @@ class LabScreen(Screen):
         self._draw(mgr._display)
 
     def _handle_text(self, btn, mgr):
-        limit = max(0, len(self._lines) - _TEXT_ROWS)
+        limit = ui.scroll_max(len(self._lines), ui.PAGE_ROWS)
         if btn in (LEFT, RIGHT):
             step = 1 if btn == RIGHT else -1
             self._scroll = max(0, min(limit, self._scroll + step))
@@ -259,27 +215,20 @@ class LabScreen(Screen):
     # ── drawing ──────────────────────────────────────────────────────────────
 
     def _draw(self, display):
-        """Title, then a shared-widget body.
-
-        Everything is drawn by the shared ui widgets, so this screen matches the
-        rest of the badge. Bounds are covered by
+        """Everything is drawn by the shared ui widgets, so this screen matches
+        the rest of the badge. Bounds are covered by
         test_labs.test_all_lab_views_fit_round_screen_and_long_tokens_are_exact."""
-        ui.clear(display)
-        self._draw_title(display)
+        ui.screen(display, self._heading(), marquee=self._marquee)
 
         if self._locked or self._view in ("text", "complete"):
-            ui.text_view(display, self._lines, self._scroll, _TEXT_Y,
-                         _TEXT_ROWS, line_h=_TEXT_LINE_H)
-            total = max(1, len(self._lines) - (_TEXT_ROWS - 1))
-            ui.status(display, "%d/%d" % (self._scroll + 1, total), 172, "muted")
+            ui.text_page(display, self._lines, self._scroll)
             ui.controls(display)
             return
 
         if self._view == "field":
             options = self._field[2]
-            ui.status(display, options[self._choice][:20], 96, "accent")
-            ui.status(display, "%d/%d" % (self._choice + 1, len(options)),
-                      140, "muted")
+            ui.value_picker(display, options[self._choice],
+                            detail="%d/%d" % (self._choice + 1, len(options)))
             ui.controls(display, "APPLY")
             return
 

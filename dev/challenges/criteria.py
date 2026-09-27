@@ -68,7 +68,7 @@ class TradeWithPeersChallenge(Challenge):
     """Met once the badge has traded with `target` distinct peer badges.
 
     Multi-step. Peers are counted by hardware badge id (peer_manager), recorded
-    when a character trade completes in OzConBase, so this only advances when you
+    when a Chi trade completes (trade_session), so this only advances when you
     trade with a *new* person — trading repeatedly with the same badge does not.
     """
     target = 5

@@ -114,10 +114,13 @@ _THEMES = {
         "metrics": {
             "title_h":      24,
             "footer_h":     22,
-            "row_top":      40,
+            # First row starts below the 36px title panel with the same inset
+            # as the other themes: at y=40 / x=26 the top row's first glyph
+            # sat outside the round glass.
+            "row_top":      48,
             "row_h":        18,
             "rows_visible":  7,
-            "text_inset":   26,
+            "text_inset":   30,
         },
         "style": {
             "chrome": "frame",

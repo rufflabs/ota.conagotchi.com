@@ -13,11 +13,11 @@ _MAX_NAME = 28
 #
 #     SYNC_PREFIX + "<id>:<name>"      e.g.  b"OZS1:vendor1:Vendor 1"
 #
-# Both the vendor (Vendor screen) and the trade UI (OzConBase Stamps) build the
+# Both the vendor (Vendor screen) and the stamp exchange (trade_session) build the
 # payload with make_sync_payload() and parse it with parse_sync_payload().
 # collect() is idempotent, so a vendor may broadcast continuously and stamp any
 # receiving badge without double-counting. Keep SYNC_PREFIX in sync with the
-# receiver in screens/ozconbase.py (_STAMP_SYNC_PREFIX).
+# receiver in trade_session.py (STAMP_PREFIX).
 SYNC_PREFIX = b"OZS1:"
 
 

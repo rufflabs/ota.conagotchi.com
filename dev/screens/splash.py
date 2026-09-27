@@ -4,15 +4,16 @@ Shows a splash image chosen by ``splash_manager`` (a persisted selection, the
 special max-level screen, or a random regular splash), then auto-advances to
 ConagotchiScreen.  The splash stays up for a guaranteed viewable period
 (``_HOLD_MS``) even if boot finished sooner — button presses do NOT cut it
-short.  If no splash art is present, a colour-fill fallback with text is drawn.
+short.  If no splash art is present, a themed text fallback is drawn.
+
+The art itself is bespoke (a full-screen blit); only the fallback goes through
+the ui framework.
 """
-import gc9a01py as gc9a01
 from screen_manager import Screen
-from image_utils import blit_image, draw_text
+from image_utils import blit_image
 import time
 
 _HOLD_MS      = 3500                          # guaranteed on-screen time (3–5 s)
-_BG_COLOR     = gc9a01.color565(10, 20, 40)   # dark navy fallback
 
 
 class SplashScreen(Screen):
@@ -57,10 +58,11 @@ def draw_boot_image(display) -> None:
 
 
 def _draw_fallback(display) -> None:
-    display.fill(_BG_COLOR)
-    # Centre "OzSec 2026" (10 chars × 8px = 80px wide) at x=80, y=105
-    draw_text(display, "OzSec 2026",  80, 105, gc9a01.WHITE,  _BG_COLOR)
-    draw_text(display, "Conagotchi",  80, 120, gc9a01.YELLOW, _BG_COLOR)
+    """Text-only boot screen for a badge with no splash art, in the theme."""
+    import ui
+    ui.clear(display)
+    ui.text_lines(display, ("OzSec 2026", ("Conagotchi", "accent")), 105,
+                  line_h=15)
 
 
 def _mode_screen():

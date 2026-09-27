@@ -14,7 +14,6 @@ met (see challenges/base.py); these screens are read-only views of that state.
 All drawing goes through the theme-driven `ui` widgets, so the look follows the
 active theme with no local colors here.
 """
-import time
 
 import ui
 
@@ -134,7 +133,6 @@ class ChallengeMenuScreen(Screen):
 
 
 _SOURCE_Y = 54
-_TITLE_STEP_MS = 320
 
 
 class ChallengeDetailScreen(Screen):
@@ -150,8 +148,7 @@ class ChallengeDetailScreen(Screen):
         self._cls = challenge_cls
         self._lines = ui.wrap(challenge_cls.description, 24)
         self._scroll = 0
-        self._title_off = 0
-        self._title_next = 0
+        self._marquee = ui.Marquee()
 
     async def enter(self, display, leds, mgr) -> None:
         self._draw(display)
@@ -171,15 +168,7 @@ class ChallengeDetailScreen(Screen):
             mgr.pop()
 
     async def update(self, display, leds, mgr) -> None:
-        """Advance the title marquee only when the name does not fit the bezel."""
-        if not ui.needs_scroll(self._cls.name):
-            return
-        now = time.ticks_ms()
-        if time.ticks_diff(now, self._title_next) < 0:
-            return
-        self._title_next = time.ticks_add(now, _TITLE_STEP_MS)
-        self._title_off += 1
-        ui.title_bar(display, self._cls.name, offset=self._title_off)
+        self._marquee.tick(display)
 
     def _draw(self, display) -> None:
         import character_manager
@@ -189,7 +178,7 @@ class ChallengeDetailScreen(Screen):
         # Same chrome as Settings. Quest names are often longer than the ten
         # characters that fit on the title row, so the heading scrolls rather
         # than being drawn past the edge of the glass.
-        ui.screen(display, cls.name, offset=self._title_off)
+        ui.screen(display, cls.name, marquee=self._marquee)
 
         char_id = getattr(cls, "character", "")
         if char_id:
@@ -202,7 +191,7 @@ class ChallengeDetailScreen(Screen):
         flag = challenge_manager.get_completed_flag(cls.id)
         if flag:
             # Hard-wrap tokens without dropping characters or adding whitespace.
-            self._lines = [flag[i:i + 20] for i in range(0, len(flag), 20)]
+            self._lines = ui.wrap_text(flag)
         else:
             self._lines = ui.wrap(cls.description, 24)
             if getattr(cls, "interactive", False) and challenge_manager.is_completed(cls.id):

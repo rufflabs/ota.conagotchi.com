@@ -12,6 +12,7 @@ are integrity-checked but not signed — the configured host is trusted.
 """
 import time
 
+import theme
 import ui
 from buttons import BOOT, SELECT, START
 from screen_manager import Screen
@@ -24,7 +25,6 @@ _STATE_NO_WIFI = "no_wifi"   # needs the user to join a network first
 
 _REBOOT_DELAY_MS = 2500
 
-_BAR_X = 30
 _BAR_W = 180
 _BAR_Y = 118
 _BAR_H = 16
@@ -270,55 +270,46 @@ class OTAUpdateScreen(Screen):
         label = "Version %d" % ota.local_version()
         if channel:
             label += "  " + channel.upper()
-        ui.center_text(display, label, 40)
+        ui.status(display, label, 40)
 
         if self._state == _STATE_IDLE:
-            ui.center_text(display, "Check for the latest", 96)
-            ui.center_text(display, "badge software.", 114)
+            ui.paragraph(display, "Check for the latest badge software.", 96,
+                         kind="text")
             ui.controls(display, "CHECK")
         elif self._state == _STATE_RUNNING:
-            ui.center_text(display, "Do not power off", 168, ui._t().muted)
+            ui.status(display, "Do not power off", 168, "muted")
         elif self._state == _STATE_DONE:
             updated = bool(self._result and self._result.get("updated"))
-            ui.status(display, self._status[:28], 96,
+            ui.status(display, self._status, 96,
                       "success" if updated else "muted")
             if updated:
-                ui.center_text(display, "Rebooting...", 120)
+                ui.status(display, "Rebooting...", 120)
             else:
                 ui.controls(display, "AGAIN")
         elif self._state == _STATE_NO_WIFI:
-            ui.status(display, self._status[:28], 78, "warning")
-            ui.center_text(display, "Open Settings > Wi-Fi", 106, ui._t().muted)
-            ui.center_text(display, "to join a network,", 124, ui._t().muted)
-            ui.center_text(display, "then try again.", 142, ui._t().muted)
+            ui.status(display, self._status, 78, "warning")
+            ui.paragraph(display, "Open Settings > Wi-Fi to join a network, "
+                         "then try again.", 106)
             ui.controls(display, "RETRY")
         elif self._state == _STATE_ERROR:
             ui.status(display, "Update failed", 88, "danger")
-            for i, line in enumerate(ui.wrap(self._error, 26)[:3]):
-                ui.center_text(display, line, 112 + i * 16, ui._t().muted)
+            ui.text_lines(display, [(l, "muted") for l in
+                                    ui.wrap_text(self._error)[:3]],
+                          112, line_h=16)
             ui.controls(display, "RETRY")
 
     def _draw_status(self, display):
         """Repaint just the status row (cleared first: the text is centred, so
         a shorter message would otherwise leave the old one's tails behind)."""
-        display.fill_rect(0, _STATUS_Y, 240, _TEXT_H, ui._t().bg)
-        ui.status(display, self._status[:28], _STATUS_Y, "accent")
+        display.fill_rect(0, _STATUS_Y, 240, _TEXT_H, theme.get().bg)
+        ui.status(display, self._status, _STATUS_Y, "accent")
 
     def _draw_bar(self, display):
-        """Repaint just the progress bar. Growth is drawn as the newly filled
-        slice so the bar never blinks; the trough is only repainted when the
-        bar has to shrink (a new run) or on the first draw."""
-        th = ui._t()
+        """Repaint just the progress bar and its percentage. ui.progress_bar
+        paints only the newly filled slice while the bar grows, so it never
+        blinks; it repaints whole on the first draw or when it shrinks."""
         pct = self._pct()
-        fill = _BAR_W * pct // 100
-        if self._last_fill is None or fill < self._last_fill:
-            display.fill_rect(_BAR_X, _BAR_Y, _BAR_W, _BAR_H, th.surface)
-            if fill:
-                display.fill_rect(_BAR_X, _BAR_Y, fill, _BAR_H, th.accent)
-        elif fill > self._last_fill:
-            display.fill_rect(_BAR_X + self._last_fill, _BAR_Y,
-                              fill - self._last_fill, _BAR_H, th.accent)
-        self._last_fill = fill
-
-        display.fill_rect(0, _PCT_Y, 240, _TEXT_H, th.bg)
-        ui.center_text(display, "%d%%" % pct, _PCT_Y, th.text)
+        self._last_fill = ui.progress_bar(display, _BAR_Y, pct, h=_BAR_H,
+                                          w=_BAR_W, prev=self._last_fill)
+        display.fill_rect(0, _PCT_Y, 240, _TEXT_H, theme.get().bg)
+        ui.status(display, "%d%%" % pct, _PCT_Y)

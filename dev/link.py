@@ -40,7 +40,7 @@ class WiredLink:
     Packets are framed identically to :class:`IrLink` (``_make_frame``) so the
     two transports are interchangeable: ``send`` takes a raw payload and frames
     it, while ``available``/``read`` return whole decoded payloads. This lets
-    OzConBase drive a trade over either link with the same code.
+    trade_session drive a trade over either link with the same code.
     """
 
     def __init__(self):
@@ -397,6 +397,8 @@ class BleLink:
     the (compacted) trade payload as a manufacturer-specific advertisement;
     scanning runs continuously and decoded peer payloads are queued for read().
     Adverts weaker than `rssi_min` are dropped so only nearby badges register.
+    Every badge heard, however weak, is also noted in `heard` (badge id ->
+    (rssi, ticks_ms)) so a screen can show who is nearby and how close.
 
     Advertising is NOT started until the first send(); call stop_advertising()
     to go quiet (used to close the pairing window) while still scanning.
@@ -412,6 +414,7 @@ class BleLink:
         self._interval = BLE_ADV_INTERVAL_US if adv_interval_us is None else adv_interval_us
         self._queue = []
         self._advertising = False
+        self.heard = {}
 
         # Power on the BLE radio before any scan/advertise. There is no user
         # Bluetooth toggle anymore and apply_radios() leaves BT off at boot, so
@@ -434,10 +437,13 @@ class BleLink:
         if event != self._ble_mod.IRQ_SCAN_RESULT:
             return
         addr_type, addr, adv_type, rssi, adv_data = data
-        if rssi < self._rssi_min:
-            return
         payload = self._ble_mod.decode_adv(bytes(adv_data))
-        if payload is not None and len(self._queue) < 16:
+        if payload is None:
+            return
+        badge = self._ble_mod.sender(payload)
+        if badge:
+            self.heard[badge] = (rssi, time.ticks_ms())
+        if rssi >= self._rssi_min and len(self._queue) < 16:
             self._queue.append(payload)
 
     def send(self, data: bytes):

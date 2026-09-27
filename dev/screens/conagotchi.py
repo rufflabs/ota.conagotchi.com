@@ -445,8 +445,8 @@ class ConagotchiScreen(Screen):
                 from screens.games_menu import GamesMenuScreen
                 mgr.push(GamesMenuScreen())
             elif screen_id == "ozconbase":
-                from screens.ozconbase import OzConBaseScreen
-                mgr.push(OzConBaseScreen())
+                from screens.collection import CollectionScreen
+                mgr.push(CollectionScreen())
             elif screen_id == "settings":
                 from screens.settings import SettingsScreen
                 mgr.push(SettingsScreen())

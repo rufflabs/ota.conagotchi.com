@@ -1,6 +1,6 @@
 """Persistent badge-to-badge trade progress.
 
-Three things, fed by OzConBase during a character sync and wiped by Factory
+Three things, fed by trade_session during a Chi trade and wiped by Factory
 Reset:
 
 1. **Unique peers** — the set of peer hardware badge ids this badge has traded
@@ -18,7 +18,7 @@ Reset:
    without any radio trade). This is broadcast-only, so send and receive are not
    guaranteed to involve the *same* peer.
 
-3. Completed character exchanges, saved in data/trade_count.txt. OzConBase
+3. Completed character exchanges, saved in data/trade_count.txt. trade_session
    records at most one per sync session after both a successful send and receipt.
    Repeated characters/peers count; repeated packets in one session do not.
 """
@@ -102,7 +102,7 @@ def _initialize_trade_count() -> None:
 
 
 def record_completed_trade() -> None:
-    """Called once by OzConBase per completed character sync, not per packet."""
+    """Called once by trade_session per completed Chi trade, not per packet."""
     _save_trade_count(trade_count() + 1)
 
 

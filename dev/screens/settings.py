@@ -1,12 +1,9 @@
 """Badge settings submenu screen."""
 import time
 
-import gc9a01py as gc9a01
-
 import ui
 from buttons import BOOT, LEFT, RIGHT, SELECT, START
 from config import NUM_RGB_LEDS, WIFI_PASSWORD, WIFI_SSID
-from image_utils import draw_text
 from pet_state import MAX_EXPERIENCE, MAX_LEVEL, PetState
 from screen_manager import Screen
 from settings_state import (
@@ -20,25 +17,9 @@ from settings_state import (
 )
 
 
-# Defaults; refreshed from the active theme by _sync_theme() before each draw.
-_BG = gc9a01.color565(10, 13, 20)
-_PANEL = gc9a01.color565(22, 27, 36)
-_SEL = gc9a01.color565(28, 98, 132)
-_WARN = gc9a01.color565(170, 58, 48)
-_TEXT = gc9a01.WHITE
-_MUTED = gc9a01.color565(145, 155, 170)
-_OK = gc9a01.color565(80, 210, 120)
-_OFF = gc9a01.color565(215, 95, 80)
-
-
-def _sync_theme() -> None:
-    """Pull this screen's palette from the active theme (colors only; the
-    Settings layout keeps its own bespoke chrome for now)."""
-    global _BG, _PANEL, _SEL, _WARN, _TEXT, _MUTED, _OK, _OFF
-    import theme
-    t = theme.get()
-    _BG, _PANEL, _SEL, _WARN = t.bg, t.surface, t.sel, t.warning
-    _TEXT, _MUTED, _OK, _OFF = t.text, t.muted, t.success, t.danger
+# Scrolls headings too long for the title row ("PET RESOURCES", ...). Every
+# page draws its title through it; update() advances it.
+_TITLE = ui.Marquee()
 
 _VIEW_MENU = "menu"
 _VIEW_WIFI = "wifi"
@@ -56,7 +37,7 @@ _VIEW_SPLASH = "splash"
 _VIEW_RESET = "reset"
 
 _DEBUG_UNLOCK_PRESSES = 5   # BOOT presses in Credits to unlock the Debug menu
-_FLASH_MS = 900             # how long the "DEBUG" unlock flash stays on screen
+_FLASH_MS = 900             # how long the "DEBUG" unlock dialog stays on screen
 
 _DBG_ENABLE = 0
 _DBG_BUTTONS = 1
@@ -65,14 +46,14 @@ _DBG_LEVEL = 3
 _DBG_EXP = 4
 _DBG_RESOURCES = 5
 _DBG_CHARACTER = 6
-_DBG_VENDOR = 7
-_DBG_SPLASH = 8
-_DBG_BLUETOOTH = 9
-_DBG_FPS = 10
-_DBG_OTA_CHANNEL = 11
-_DBG_COUNT = 12
-_DBG_ROW_Y0 = 40
-_DBG_ROW_DY = 22   # tight enough that the last row clears the status bar (y=170)
+_DBG_UNLOCK_ALL = 7
+_DBG_LOCK_ALL = 8
+_DBG_VENDOR = 9
+_DBG_SPLASH = 10
+_DBG_BLUETOOTH = 11
+_DBG_FPS = 12
+_DBG_OTA_CHANNEL = 13
+_DBG_COUNT = 14
 
 _EXP_STEP = 100
 _REDRAW_MS = 180
@@ -170,10 +151,12 @@ class SettingsScreen(Screen):
         self._draw(display, mgr)
 
     async def update(self, display, leds, mgr) -> None:
-        if self._debug_flash_until and \
-                time.ticks_diff(time.ticks_ms(), self._debug_flash_until) >= 0:
-            self._debug_flash_until = 0
-            self._draw(display, mgr)
+        if self._debug_flash_until:
+            if time.ticks_diff(time.ticks_ms(), self._debug_flash_until) >= 0:
+                self._debug_flash_until = 0
+                self._draw(display, mgr)
+        else:
+            _TITLE.tick(display)
         if self._view == _VIEW_BUTTON_LIVE:
             self._update_button_live(display, mgr)
         # Keep the pet's level/XP LEDs live after a Level/EXP save: the pet
@@ -249,7 +232,7 @@ class SettingsScreen(Screen):
             self._settings.debug_enabled = True
             self._settings.save()
         self._debug_flash_until = time.ticks_ms() + _FLASH_MS
-        _draw_flash(display, "DEBUG")
+        ui.dialog(display, "DEBUG", ("UNLOCKED",), kind="accent")
 
     def _handle_wifi_button(self, btn: str, mgr) -> None:
         if btn == BOOT or btn == SELECT:
@@ -460,7 +443,7 @@ class SettingsScreen(Screen):
         con = self._con_screen(mgr)
         if con is not None:
             con._update_alert(mgr._leds)
-        self._message = ("DRAINED " if drain else "FILLED ") + _clip(label.upper(), 12)
+        self._message = ("DRAINED " if drain else "FILLED ") + ui.clip(label.upper(), 12)
         self._draw(mgr._display, mgr)
 
     def _handle_character_button(self, btn: str, mgr) -> None:
@@ -592,6 +575,18 @@ class SettingsScreen(Screen):
         if action == "keyboard":
             self._toggle_keyboard(mgr)
             return
+        if action == "bluetooth":
+            self._settings.bluetooth_enabled = not self._settings.bluetooth_enabled
+            self._settings.save()
+            self._message = "BT TRADES " + _on_off(self._settings.bluetooth_enabled)
+            self._draw(mgr._display, mgr)
+            return
+        if action == "ir":
+            self._settings.ir_enabled = not self._settings.ir_enabled
+            self._settings.save()
+            self._message = "IR TRADES " + _on_off(self._settings.ir_enabled)
+            self._draw(mgr._display, mgr)
+            return
         if action == "wifi":
             self._view = _VIEW_WIFI
         elif action == "credits":
@@ -684,6 +679,19 @@ class SettingsScreen(Screen):
             self._draw(mgr._display, mgr)
         elif self._debug_sel == _DBG_CHARACTER:
             self._open_character_picker(mgr)
+        elif self._debug_sel == _DBG_UNLOCK_ALL:
+            import character_manager
+            import pet_state
+            new = character_manager.unlock_all()
+            for cls in new:
+                pet_state.create_fresh(cls)   # same start as a Chi from a trade
+            self._message = ("UNLOCKED %d CHI'S" % len(new)) if new else "ALL UNLOCKED"
+            self._redraw_debug_current(mgr)
+        elif self._debug_sel == _DBG_LOCK_ALL:
+            import character_manager
+            locked = character_manager.lock_all_but_active()
+            self._message = ("LOCKED %d CHI'S" % locked) if locked else "NONE TO LOCK"
+            self._redraw_debug_current(mgr)
         elif self._debug_sel == _DBG_VENDOR:
             self._settings.vendor_mode_enabled = not self._settings.vendor_mode_enabled
             self._settings.save()
@@ -883,7 +891,6 @@ class SettingsScreen(Screen):
         leds.all_off()
 
     def _draw(self, display, mgr) -> None:
-        _sync_theme()
         if self._view == _VIEW_WIFI:
             _draw_wifi_page(display, self._settings, self._wifi_sel, self._message)
         elif self._view == _VIEW_WIFI_SCAN:
@@ -892,7 +899,7 @@ class SettingsScreen(Screen):
             _draw_credits_page(display)
         elif self._view == _VIEW_DEBUG:
             _draw_debug_page(display, self._settings, self._pet, self._debug_sel,
-                             self._message, "")
+                             self._message)
         elif self._view == _VIEW_BUTTONS:
             _draw_button_test_page(display, self._button_sel)
         elif self._view == _VIEW_BUTTON_LIVE:
@@ -918,7 +925,8 @@ class SettingsScreen(Screen):
             if self._sel >= count:
                 self._sel = count - 1
             self._menu_top = ui.clamp_scroll(self._sel, self._menu_top, count)
-            _draw_menu(display, self._settings, self._sel, self._menu_top)
+            _draw_menu(display, self._settings, self._sel, self._menu_top,
+                       self._message)
 
 
 def _load_pet(mgr):
@@ -941,6 +949,8 @@ def _main_menu_items(settings: BadgeSettings):
     import theme
     items = [
         ("Wi-Fi", _wifi_label(settings), "wifi"),
+        ("Bluetooth", _on_off(settings.bluetooth_enabled), "bluetooth"),
+        ("IR", _on_off(settings.ir_enabled), "ir"),
         ("Badge Mode", _badge_mode_label(settings), "badge_mode"),
         ("Keyboard", _keyboard_label(settings), "keyboard"),
         ("Credits", "VIEW", "credits"),
@@ -977,59 +987,43 @@ def _keyboard_label(settings: BadgeSettings) -> str:
 
 def _badge_mode_label(settings: BadgeSettings) -> str:
     """CONAGOTCHI or BLINKY, clipped to the width the row value allows."""
-    return _clip(settings.badge_mode.upper(), 12) if settings.badge_mode else "-"
+    return ui.clip(settings.badge_mode.upper(), 12) if settings.badge_mode else "-"
 
 
-def _row_value_fg(value: str) -> int:
-    if value == "ON" or value == "ACTIVE" or value == "LINKED":
-        return _OK
-    if value == "OFF":
-        return _OFF
-    return _MUTED
-
-
+def _screen(display, title) -> None:
+    ui.screen(display, title, marquee=_TITLE)
 
 
 def _draw_list_page(display, title, items, selected, confirm=None,
-                    message=None, empty=None, value_fg=_row_value_fg) -> None:
-    """Standard Settings list page: title bar + windowed ui.list_view + controls.
+                    message=None, empty=None, value_fg=None) -> None:
+    """Standard Settings list page: title bar + windowed ui.list_view + the
+    message slot + controls.
 
     Scrolls automatically when the list outgrows the screen; the window is
     derived from `selected`, so nav handlers just update the index and redraw.
     """
-    import theme
-    ui.screen(display, title)
+    _screen(display, title)
     if not items:
-        ui.center_text(display, empty or "NONE", 104, _WARN, _BG)
+        ui.status(display, empty or "NONE", 104, "warning")
     else:
-        top = ui.window_top(selected, len(items), theme.get().rows_visible)
+        top = ui.window_top(selected, len(items))
         ui.list_view(display, items, selected, top, value_fg=value_fg)
-    if message:
-        ui.center_text(display, _clip(message, 22), 180, _OK, _BG)
+    ui.message(display, message)
     ui.controls(display, confirm)
 
 
-def _draw_menu(display, settings: BadgeSettings, selected: int, top: int) -> None:
-    ui.screen(display, "SETTINGS")
-    ui.list_view(display, _main_menu_items(settings), selected, top,
-                 value_fg=_row_value_fg)
+def _draw_menu(display, settings: BadgeSettings, selected: int, top: int,
+               message: str = "") -> None:
+    _screen(display, "SETTINGS")
+    ui.list_view(display, _main_menu_items(settings), selected, top)
+    ui.message(display, message)
     ui.controls(display, "OK")
-
-
 
 
 def _draw_debug_page(display, settings: BadgeSettings, pet: PetState,
-                     selected: int, message: str, button_status: str) -> None:
-    ui.screen(display, "DEBUG")
-
-    import theme
-    items = _debug_rows(settings, pet)
-    top = ui.window_top(selected, len(items), theme.get().rows_visible)
-    ui.list_view(display, items, selected, top, value_fg=_row_value_fg)
-
-    _draw_debug_status(display, settings, message, button_status)
-
-    ui.controls(display, "OK")
+                     selected: int, message: str) -> None:
+    _draw_list_page(display, "DEBUG", _debug_rows(settings, pet), selected,
+                    confirm="OK", message=message)
 
 
 def _debug_rows(settings: BadgeSettings, pet: PetState):
@@ -1040,13 +1034,22 @@ def _debug_rows(settings: BadgeSettings, pet: PetState):
         ("Level", str(int(pet.level))),
         ("EXP", str(int(pet.total_experience))),
         ("Pet Resources", "VIEW"),
-        ("Character", _clip(pet.name.upper(), 10)),
+        ("Character", ui.clip(pet.name.upper(), 10)),
+        ("Unlock All Chi's", _chi_count()),
+        ("Lock All Chi's", "RUN"),
         ("Vendor Mode", _on_off(settings.vendor_mode_enabled)),
         ("Splash", _splash_value()),
         ("Bluetooth", "VIEW"),
         ("FPS", _on_off(settings.fps_enabled)),
         ("Update Channel", settings.ota_channel.upper() or "-"),
     )
+
+
+def _chi_count() -> str:
+    """Collected/total Chi's, the value beside Unlock All Chi's."""
+    import character_manager
+    return "%d/%d" % (len(character_manager.get_unlocked()),
+                      len(character_manager.all_characters()))
 
 
 def _splash_value() -> str:
@@ -1060,12 +1063,6 @@ def _splash_value() -> str:
         return "AUTO"
 
 
-def _draw_debug_status(display, settings: BadgeSettings, message: str, button_status: str) -> None:
-    display.fill_rect(0, 170, 240, 28, _BG)
-    if message:
-        ui.center_text(display, message, 174, _MUTED, _BG)
-
-
 def _draw_button_test_page(display, selected: int) -> None:
     """Duration picker for the live button test."""
     items = ["{} SECONDS".format(d) for d in _BTN_DURATIONS]
@@ -1073,49 +1070,24 @@ def _draw_button_test_page(display, selected: int) -> None:
 
 
 def _draw_button_live(display, held, tested, secs: int) -> None:
-    """Live per-button test: each button lights green while held and keeps a
-    checkmark once it has been pressed."""
-    ui.screen(display, "BUTTON TEST")
-    ui.center_text(display, "{}s   TESTED {}/{}".format(secs, len(tested), len(_BTN_LIVE)),
-                 46, _MUTED, _BG)
-
-    y0 = 74
-    dy = 26
+    """Live per-button test: a button's row lights while it is held, and its
+    value reads DONE once it has been pressed at all."""
+    import theme
+    th = theme.get()
+    _screen(display, "BUTTON TEST")
     for i, (name, label) in enumerate(_BTN_LIVE):
-        y = y0 + i * dy
-        is_held = name in held
-        if is_held:
-            display.fill_rect(36, y - 4, 168, 22, _OK)
-            draw_text(display, label, 48, y, _BG, _OK)
-        else:
-            draw_text(display, label, 48, y, _TEXT, _BG)
-        # tested indicator: filled green box (done) vs muted outline (pending)
-        bx, by = 178, y - 3
-        if name in tested:
-            display.fill_rect(bx, by, 16, 16, _OK)
-        else:
-            display.rect(bx, by, 16, 16, _MUTED)
-
+        ui.row(display, th.row_top + i * th.row_h, label,
+               "DONE" if name in tested else "-",
+               fill="success" if name in held else None,
+               value_fg=lambda v: th.success if v == "DONE" else th.muted)
+    ui.message(display, "{}s  TESTED {}/{}".format(secs, len(tested), len(_BTN_LIVE)),
+               "muted")
     ui.bottom_line(display, "TESTING...")
 
 
 def _draw_led_test_page(display, states, selected: int, message: str) -> None:
-    ui.screen(display, "LED TESTS")
-    display.fill_rect(0, 211, 240, 29, _PANEL)
-
-    rows = _led_test_rows(states)
-    total = len(rows)
-    start = max(0, min(selected - 2, max(0, total - 6)))
-    visible = rows[start:start + 6]
-    y = 42
-    for idx, row in enumerate(visible):
-        real_idx = start + idx
-        _draw_row(display, y + idx * 24, row[0], row[1], real_idx == selected)
-
-    if message:
-        ui.center_text(display, _clip(message, 22), 186, _MUTED, _BG)
-
-    ui.controls(display, "OK")
+    _draw_list_page(display, "LED TESTS", _led_test_rows(states), selected,
+                    confirm="OK", message=message)
 
 
 def _led_test_rows(states):
@@ -1143,33 +1115,24 @@ def _led_label(idx: int) -> str:
 
 
 def _draw_editor_page(display, title: str, value: str, bounds: str) -> None:
-    ui.screen(display, title)
-    display.fill_rect(0, 211, 240, 29, _PANEL)
-    ui.center_text(display, "LEFT / RIGHT", 72, _MUTED, _BG)
-    ui.center_text(display, "ADJUST VALUE", 92, _MUTED, _BG)
-    display.fill_rect(60, 122, 120, 30, _SEL)
-    display.rect(60, 122, 120, 30, _TEXT)
-    ui.center_text(display, value, 133, _TEXT, _SEL)
-    ui.center_text(display, bounds, 168, _MUTED, _BG)
+    _screen(display, title)
+    ui.value_picker(display, value, hint="LEFT/RIGHT ADJUSTS", detail=bounds)
     ui.controls(display, "SAVE")
 
 
 def _draw_reset_page(display) -> None:
-    ui.screen(display, "FACTORY RESET")
-    display.fill_rect(0, 211, 240, 29, _PANEL)
-    ui.center_text(display, "ERASE ALL DATA?", 66, _WARN, _BG)
-    ui.center_text(display, "Character, stamps,", 96, _MUTED, _BG)
-    ui.center_text(display, "pet state & settings", 114, _MUTED, _BG)
-    ui.center_text(display, "will be wiped and the", 132, _MUTED, _BG)
-    ui.center_text(display, "badge will reboot.", 150, _MUTED, _BG)
-    ui.center_text(display, "THIS CANNOT BE UNDONE", 176, _WARN, _BG)
+    _screen(display, "FACTORY RESET")
+    ui.status(display, "ERASE ALL DATA?", 58, "danger")
+    ui.paragraph(display, "Character, stamps, pet state and settings "
+                 "will be wiped and the badge will reboot.", 82, line_h=16)
+    ui.status(display, "CANNOT BE UNDONE", 172, "danger")
     ui.controls(display, "WIPE")
 
 
 def _draw_reset_progress(display) -> None:
-    display.fill(_BG)
-    ui.center_text(display, "RESETTING", 104, _WARN, _BG)
-    ui.center_text(display, "REBOOTING...", 128, _MUTED, _BG)
+    ui.clear(display)
+    ui.text_lines(display, (("RESETTING", "danger"), ("REBOOTING...", "muted")),
+                  104, line_h=24)
 
 
 def _resource_rows(pet):
@@ -1177,7 +1140,7 @@ def _resource_rows(pet):
     rows = []
     for label, attr in _RESOURCE_DEFS:
         if attr == "work":
-            label = _clip(getattr(pet, "work_name", "Work"), 12)
+            label = ui.clip(getattr(pet, "work_name", "Work"), 12)
         val = int(max(0, min(100, getattr(pet, attr, 0))))
         rows.append((label, "{}%".format(val)))
     return tuple(rows)
@@ -1185,28 +1148,26 @@ def _resource_rows(pet):
 
 def _resource_value_fg(value: str) -> int:
     """Colour the % value red when at/below the low-resource alert threshold."""
+    import theme
+    th = theme.get()
     try:
         import pet_state
-        return _OFF if int(value.rstrip("%")) <= pet_state.LOW_THRESHOLD else _OK
+        return th.danger if int(value.rstrip("%")) <= pet_state.LOW_THRESHOLD else th.success
     except (ValueError, ImportError):
-        return _MUTED
+        return th.muted
 
 
 def _draw_resources_page(display, pet, selected: int, message: str) -> None:
-    import theme
     rows = _resource_rows(pet)
-    ui.screen(display, "PET RESOURCES")
-    top = ui.window_top(selected, len(rows), theme.get().rows_visible)
-    ui.list_view(display, rows, selected, top, value_fg=_resource_value_fg)
-    if message:
-        ui.center_text(display, _clip(message, 22), 174, _MUTED, _BG)
     # START drains a non-empty resource, fills an empty one.
     empty = rows[selected][1] == "0%"
-    ui.controls(display, "FILL" if empty else "DRAIN")
+    _draw_list_page(display, "PET RESOURCES", rows, selected,
+                    confirm="FILL" if empty else "DRAIN", message=message,
+                    value_fg=_resource_value_fg)
 
 
 def _draw_character_page(display, characters, selected: int, active_id: str) -> None:
-    items = [(_clip(c.name, 14), "ACTIVE" if c.id == active_id else "SET")
+    items = [(ui.clip(c.name, 14), "ACTIVE" if c.id == active_id else "SET")
              for c in characters]
     _draw_list_page(display, "CHARACTER", items, selected,
                     confirm="SET", empty="NONE FOUND")
@@ -1224,21 +1185,9 @@ def _draw_splash_page(display, options, selected: int, message: str) -> None:
             tag = "SPECIAL" if splash_manager.is_special(name) else "SET"
         if name == current:
             tag = "ACTIVE"
-        items.append((_clip(label, 14), tag))
+        items.append((ui.clip(label, 14), tag))
     _draw_list_page(display, "SPLASH", items, selected,
                     confirm="SET", message=message, empty="NONE FOUND")
-
-
-def _draw_row(display, y: int, label: str, value: str, selected: bool) -> None:
-    bg = _SEL if selected else _BG
-    fg = _TEXT
-    val_fg = _OK if value == "ON" else (_OFF if value == "OFF" else _MUTED)
-    # Inset into a centered band so text clears the round bezel on every row.
-    display.fill_rect(28, y - 5, 184, 22, bg)
-    if selected:
-        display.rect(28, y - 5, 184, 22, _TEXT)
-    draw_text(display, label, 36, y, fg, bg)
-    draw_text(display, value, 204 - len(value) * 8, y, val_fg, bg)
 
 
 def _draw_wifi_page(display, settings: BadgeSettings, selected: int, message: str) -> None:
@@ -1253,7 +1202,7 @@ def _draw_wifi_page(display, settings: BadgeSettings, selected: int, message: st
         ("Scan Networks", "FIND"),
         ("Connect", connect),
         ("Net Check", "TEST"),
-        ("SSID", _clip(settings.ssid, 12) if settings.ssid else "<empty>"),
+        ("SSID", ui.clip(settings.ssid, 12) if settings.ssid else "<empty>"),
         ("Password", _mask(settings.password)),
         ("Disconnect", "DROP"),
         ("Forget Network", "CLEAR"),
@@ -1262,39 +1211,22 @@ def _draw_wifi_page(display, settings: BadgeSettings, selected: int, message: st
 
 
 def _draw_wifi_scan_page(display, networks, selected: int) -> None:
-    items = [(_clip(n[0], 14), "{}dB".format(n[1])) for n in networks]
+    items = [(ui.clip(n[0], 14), "{}dB".format(n[1])) for n in networks]
     _draw_list_page(display, "SELECT NETWORK", items, selected,
                     confirm="USE", empty="NO NETWORKS")
 
 
 def _draw_credits_page(display) -> None:
-    ui.screen(display, "CREDITS")
-    ui.center_text(display, "OzSec 2026", 56, _TEXT, _BG)
-    ui.center_text(display, "Conagotchi", 76, _MUTED, _BG)
-    ui.center_text(display, "Contributors:", 108, _TEXT, _BG)
-    ui.center_text(display, "rufflabs", 130, _MUTED, _BG)
-    ui.center_text(display, "baum", 150, _MUTED, _BG)
-    ui.center_text(display, "Claude and Codex", 170, _MUTED, _BG)
+    _screen(display, "CREDITS")
+    ui.text_lines(display, ("OzSec 2026", ("Conagotchi", "muted")), 56, line_h=20)
+    ui.text_lines(display, ("Contributors:", ("rufflabs", "muted"),
+                            ("baum", "muted"), ("Claude and Codex", "muted")),
+                  108, line_h=20)
     ui.controls(display)
-
-
-def _draw_flash(display, text: str) -> None:
-    """Brief full-width banner (e.g. the DEBUG unlock confirmation)."""
-    display.fill_rect(0, 92, 240, 56, _SEL)
-    display.rect(0, 92, 240, 56, _TEXT)
-    ui.center_text(display, text, 116, _TEXT, _SEL)
-
-
 
 
 def _on_off(enabled: bool) -> str:
     return "ON" if enabled else "OFF"
-
-
-def _clip(text: str, max_chars: int) -> str:
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars - 1] + ">"
 
 
 def _mask(text: str) -> str:
